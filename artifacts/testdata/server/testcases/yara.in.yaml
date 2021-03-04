@@ -170,3 +170,9 @@ Queries:
            mock_check(function='upload', expected_calls=1),
            mock_check(plugin="proc_yara", expected_calls=1)
     FROM scope()
+
+  # Check Yara NTFS and different yara types - default is standard
+  - SELECT FullPath,Rule,Tags,Meta,HitContext FROM Artifact.Windows.Detection.Yara.NTFS()
+
+  # Check Yara NTFS and different yara types - default is standard
+  - SELECT FullPath,Rule,Tags,Meta,HitContext,HitOffset FROM Artifact.Windows.Detection.Yara.NTFS(ShortHandYara='wide nocase ascii:MZ')
