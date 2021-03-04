@@ -94,6 +94,15 @@ Queries:
     FROM yara(rules=imphashSig, accessor="file",
     files=srcDir+"/artifacts/testdata/files/3DBuilder.ResourceResolver.exe")
 
+  
+  # Check Yara NTFS and different yara types - default is standard
+  - SELECT FullPath,Rule,Tags,Meta,HitContext FROM Artifact.Windows.Detection.Yara.NTFS()
+
+  # Check Yara NTFS and different yara types - ShortHand
+  - SELECT FullPath,Rule,Tags,Meta,HitContext,HitOffset FROM Artifact.Windows.Detection.Yara.NTFS(ShortHandYara='wide nocase ascii:MZ')
+
+  
+
   # Setup our mocks
   - |
     LET _ <= SELECT
@@ -171,8 +180,4 @@ Queries:
            mock_check(plugin="proc_yara", expected_calls=1)
     FROM scope()
 
-  # Check Yara NTFS and different yara types - default is standard
-  - SELECT FullPath,Rule,Tags,Meta,HitContext FROM Artifact.Windows.Detection.Yara.NTFS()
 
-  # Check Yara NTFS and different yara types - default is standard
-  - SELECT FullPath,Rule,Tags,Meta,HitContext,HitOffset FROM Artifact.Windows.Detection.Yara.NTFS(ShortHandYara='wide nocase ascii:MZ')
