@@ -101,6 +101,52 @@ files=srcDir+"/artifacts/testdata/files/3DBuilder.ResourceResolver.exe")
   "\"imphash\"": "imphash",
   "basename(path=FileName)": "3DBuilder.ResourceResolver.exe"
  }
+]SELECT 
+  FileName as FullPath,
+  File.Size AS Size,
+  File.ModTime AS ModTime,
+  Rule, Tags, Meta, 
+  str(str=String.Data) AS HitContext,
+  String.Offset AS HitOffset
+FROM yara(rules=IsPE,files='artifacts/testdata/files/wkscli.dll' )
+LIMIT 1
+[
+ {
+  "FullPath": "artifacts/testdata/files/wkscli.dll",
+  "Size": 9728,
+  "ModTime": "2021-02-26T13:46:05.909429775Z",
+  "Rule": "IsPE",
+  "Tags": [
+   "TestRule"
+  ],
+  "Meta": {
+   "date": "2021-03-04",
+   "description": "A simple PE rule to test yara features",
+   "author": "the internet"
+  },
+  "HitContext": "Null",
+  "HitOffset": null
+ }
+]SELECT 
+  FileName as FullPath,
+  File.Size AS Size,
+  File.ModTime AS ModTime,
+  Rule, Tags, Meta, 
+  str(str=String.Data) AS HitContext,
+  String.Offset AS HitOffset
+FROM yara(rules='wide ascii:MZ',files='artifacts/testdata/files/wkscli.dll' )
+LIMIT 1
+[
+ {
+  "FullPath": "artifacts/testdata/files/wkscli.dll",
+  "Size": 9728,
+  "ModTime": "2021-02-26T13:46:05.909429775Z",
+  "Rule": "X",
+  "Tags": [],
+  "Meta": {},
+  "HitContext": "MZ",
+  "HitOffset": 0
+ }
 ]LET _ <= SELECT
       mock(plugin='http_client', results=[
          dict(Url='http://remote',
@@ -140,6 +186,31 @@ files=srcDir+"/artifacts/testdata/files/3DBuilder.ResourceResolver.exe")
       mock(function='upload', results=[
          dict(FullPath="C:\\Users\\test\\AppData\\Local\\Temp\\dmp770529331.dmp",
               Pid=844)
+      ]),
+      mock(function='upload', results=[
+         dict(FullPath="C:\\Users\\test\\AppData\\Local\\Temp\\dmp770529331.dmp",
+              Pid=844)
+      ]),
+      // First call to Windows.NTFS.MFT reveal target dll info.
+      mock(artifact=Artifact.Windows.NTFS.MFT, results=[
+          dict(
+            EntryNumber=42344,
+            InUse="true",
+            ParentEntryNumber=3589,
+            MFTPath=srcDir + "/$MFT",
+            FullPath="artifacts/testdata/files/wkscli.dll",
+            FileName="wkscli.dll",
+            FileSize=764976,
+            ReferenceCount=2,
+            IsDir="false",
+            Created0x10="2020-11-19T02:48:46.9885373Z",
+            Created0x30="2021-01-24T06:57:36.7073284Z",
+            LastModified0x10="2020-11-19T02:48:47.0041758Z",
+            LastModified0x30="2021-01-24T06:57:39.5353986Z",
+            LastRecordChange0x10="2021-01-24T06:59:40.7021579Z",
+            LastRecordChange0x30="2021-01-24T06:57:39.5353986Z",
+            LastAccess0x10="2021-03-05T13:44:04.1999087Z",
+            LastAccess0x30="2021-01-24T06:57:36.7073284Z")
       ])
 FROM scope()
 []SELECT * FROM Artifact.Windows.Detection.RemoteYara.Process( source="", processRegex='cmd', yaraURL='http://remote')[
@@ -245,4 +316,12 @@ FROM scope()
    "Error": "OK"
   }
  }
-]
+]SELECT split(string=MFTPath,sep='\\$')[0] +  FullPath as FullPath2, MFTPath, FullPath, IsDir, FileSize FROM Artifact.Windows.NTFS.MFT()[
+ {
+  "FullPath2": "/Users/matt/git/velociraptor/artifacts/testdata/files/wkscli.dll",
+  "MFTPath": "/Users/matt/git/velociraptor/$MFT",
+  "FullPath": "artifacts/testdata/files/wkscli.dll",
+  "IsDir": "false",
+  "FileSize": 764976
+ }
+]SELECT * FROM Artifact.Windows.Detection.Yara.NTFS(SearchMFT=srcDir + '/$MFT', PathRegex='artifacts/testdata/files/wkscli.dll')[]
