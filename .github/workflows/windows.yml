@@ -40,7 +40,8 @@ jobs:
         mklink c:\Users\link c:\Windows
         mkdir "C:\Program Files\Velociraptor"
         mkdir c:\tmp
-        echo "This is a test of a folder ADS! Its resident too!" > c:\tmp:test.txt
+        mkdir c:\tmp\test
+        echo "This is a test of a folder ADS! Its resident too!" > c:\tmp\test:test.txt
         echo Hello > C:\hello.txt
         echo HelloADS > C:\hello.txt:myads
         fsutil file setshortname C:\hello.txt hi.txt
