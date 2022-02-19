@@ -28,8 +28,5 @@ Queries:
   - SELECT FullPath FROM glob(globs="c:\\*", accessor="lazy_ntfs")
     WHERE Name =~ "txt"
 
-  # Test for ADSHunter
-  - SELECT AdsName,Size,HostObject,HostIsDir,AdsContent,FullPath FROM Artifact.Windows.NTFS.ADSHunter(TargetFolder='c:\adstest')
-  - SELECT AdsName,Size,HostObject,HostIsDir,AdsContent,FullPath FROM Artifact.Windows.NTFS.ADSHunter(TargetFolder='c:/adstest')
-  - SELECT AdsName,Size,HostObject,HostIsDir,AdsContent,FullPath FROM Artifact.Windows.NTFS.ADSHunter(TargetFolder='c:\\adstest')
-  - SELECT AdsName,Size,HostObject,HostIsDir,AdsContent,FullPath FROM Artifact.Windows.NTFS.ADSHunter(TargetFolder='c:\\\\adstest')
+  # Test for ADSHunter - c:\adstest\test and ADS created via git action in windows.yaml
+  - SELECT AdsName,Size,HostObject,HostIsDir,AdsContent,FullPath FROM Artifact.Windows.NTFS.ADSHunter(TargetFolder='C:\\adstest')
