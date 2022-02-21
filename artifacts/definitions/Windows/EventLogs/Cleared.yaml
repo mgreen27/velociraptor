@@ -47,7 +47,7 @@ sources:
             FullPath=FullPath,
             UserData=UserData
         ) as EventData
-      FROM Artifact.Windows.EventLogs.EvtxHunter( --PathRegex=TargetGlob,
+      FROM Artifact.Windows.EventLogs.EvtxHunter(PathRegex=TargetGlob,
             ChannelRegex='^(Security|System)$',
             IdRegex='^(1102|104)',
             IocRegex='clear|cleared',
