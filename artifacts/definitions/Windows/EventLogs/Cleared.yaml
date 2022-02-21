@@ -13,7 +13,7 @@ author: Matt Green - @mgreen27
 precondition: SELECT OS From info() where OS = 'windows'
 
 parameters:
-  - name: EventLog  
+  - name: EvtxGlob  
     default: C:\System32\Winevt\Logs\{Security,System}.evtx
   - name: DateAfter
     type: timestamp
