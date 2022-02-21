@@ -12,8 +12,3 @@ Queries:
   - SELECT EventID,ServiceName,Source FROM Artifact.Windows.EventLogs.ServiceCreationComspec(
           EventLog="C:\\Windows\\system32\\winevt\\logs\\System.evtx",
           SearchVSS=True)
-
-  # Find cleared event logs - should show 2 times.
-  - SELECT EventID, Channel, Message=~ 'Clear',Source FROM Artifact.Windows.EventLogs.Cleared(
-          EventLog="C:\\Windows\\system32\\winevt\\logs\\System.evtx",
-          SearchVSS=True)
