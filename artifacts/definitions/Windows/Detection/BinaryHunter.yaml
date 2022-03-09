@@ -80,7 +80,7 @@ sources:
         FROM if(condition=DateBefore AND DateAfter,
             then={
                 SELECT OSPath, Name, Size,Mtime,Atime,Ctime,Btime
-                FROM glob(globs=TargetGlob,accessor=Accessor)
+                FROM glob(globs=TargetGlob,accessor=Accessor,nosymlink='True')
                 WHERE NOT IsDir AND NOT IsLink
                     AND Size > SizeMin AND Size < SizeMax
                     AND ( Mtime < DateBefore OR Ctime < DateBefore OR Btime < DateBefore )
@@ -89,7 +89,7 @@ sources:
             else={ SELECT * FROM  if(condition=DateBefore,
                 then={
                     SELECT OSPath, Name, Size,Mtime,Atime,Ctime,Btime
-                    FROM glob(globs=OSPath,accessor=Accessor)
+                    FROM glob(globs=OSPath,accessor=Accessor,nosymlink='True')
                     WHERE NOT IsDir AND NOT IsLink
                         AND Size > SizeMin AND Size < SizeMax
                         AND ( Mtime < DateBefore OR Ctime < DateBefore OR Btime < DateBefore )
@@ -97,14 +97,14 @@ sources:
                 else={ SELECT * FROM  if(condition=DateAfter,
                 then={
                     SELECT OSPath, Name, Size,Mtime,Atime,Ctime,Btime
-                    FROM glob(globs=TargetGlob,accessor=Accessor)
+                    FROM glob(globs=TargetGlob,accessor=Accessor,nosymlink='True')
                     WHERE NOT IsDir AND NOT IsLink
                         AND Size > SizeMin AND Size < SizeMax
                         AND ( Mtime > DateAfter OR Ctime > DateAfter OR Btime > DateAfter )
                 },
                 else={
                     SELECT OSPath, Name, Size,Mtime,Atime,Ctime,Btime
-                    FROM glob(globs=TargetGlob,accessor=Accessor)
+                    FROM glob(globs=TargetGlob,accessor=Accessor,nosymlink='True')
                     WHERE NOT IsDir AND NOT IsLink
                         AND Size > SizeMin AND Size < SizeMax
                 })})})
