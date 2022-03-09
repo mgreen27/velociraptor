@@ -14,7 +14,7 @@ Parameters:
 
 Queries:
   # HashHunter Detection
-  - SELECT * FROM Artifact.Generic.Detection.HashHunter(TargetGlob=srcDir + "/artifacts/testdata/files/*", SHA1List=SHA1s,SizeMax=30000)
-  - SELECT * FROM Artifact.Generic.Detection.HashHunter(TargetGlob=srcDir + "/artifacts/testdata/files/*", MD5List=MD5s,SizeMin=20000,SizeMax=30000)
-  - SELECT * FROM Artifact.Generic.Detection.HashHunter(TargetGlob=srcDir + "/artifacts/testdata/files/*", SHA256List=SHA256s,SizeMax=1000)
+  - SELECT Name,Size,Hash FROM Artifact.Generic.Detection.HashHunter(TargetGlob=srcDir + "/artifacts/testdata/files/*", SHA1List=SHA1s,SizeMax=30000)
+  - SELECT Name,Size,Hash FROM Artifact.Generic.Detection.HashHunter(TargetGlob=srcDir + "/artifacts/testdata/files/*", MD5List=MD5s,SizeMin=20000,SizeMax=30000)
+  - SELECT Name,Size,Hash FROM Artifact.Generic.Detection.HashHunter(TargetGlob=srcDir + "/artifacts/testdata/files/*", SHA256List=SHA256s,SizeMax=1000)
  

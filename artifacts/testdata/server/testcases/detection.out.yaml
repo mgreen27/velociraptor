@@ -1,106 +1,58 @@
-SELECT * FROM Artifact.Generic.Detection.HashHunter(TargetGlob=srcDir + "/artifacts/testdata/files/*", SHA1List=SHA1s,SizeMax=30000)[
+SELECT Name,Size,Hash FROM Artifact.Generic.Detection.HashHunter(TargetGlob=srcDir + "/artifacts/testdata/files/*", SHA1List=SHA1s,SizeMax=30000)[
  {
-  "FullPath": "/Users/mgreen/git/velociraptor/artifacts/testdata/files/1.lnk",
   "Name": "1.lnk",
   "Size": 399,
-  "Timestamps": {
-   "Mtime": "2021-11-24T03:33:27.125724132Z",
-   "Atime": "2021-11-24T03:33:44.723152517Z",
-   "Ctime": "2021-11-24T03:33:27.125724132Z",
-   "Btime": "2021-11-24T03:33:27.125665453Z"
-  },
   "Hash": {
    "MD5": "533091d08258bf618871bf5d51858566",
    "SHA1": "c7ccf7f7c65e24137798b2af967620896bdc032c",
    "SHA256": "162e56481955b032cd7b146e0fb08f943dc6bb5ec135a47714de77604b3e032d"
-  },
-  "_Source": "Generic.Detection.HashHunter"
+  }
  },
  {
-  "FullPath": "/Users/mgreen/git/velociraptor/artifacts/testdata/files/CSDump.bin",
   "Name": "CSDump.bin",
   "Size": 22000,
-  "Timestamps": {
-   "Mtime": "2021-11-24T03:33:27.127078928Z",
-   "Atime": "2021-12-16T14:25:41.819175104Z",
-   "Ctime": "2021-11-24T03:33:27.127078928Z",
-   "Btime": "2021-11-24T03:33:27.127017758Z"
-  },
   "Hash": {
    "MD5": "81d9b0a5308f6e46e06567ef9b889496",
    "SHA1": "ba4a435cff1897ac653b4c6af43c40b4d01c154c",
    "SHA256": "2227d7bd3c7a36a4d1d103e41df9a18798bf0d22b3e6357ee689d320fd318a24"
-  },
-  "_Source": "Generic.Detection.HashHunter"
+  }
  },
  {
-  "FullPath": "/Users/mgreen/git/velociraptor/artifacts/testdata/files/CSShellcode.bin",
   "Name": "CSShellcode.bin",
   "Size": 888,
-  "Timestamps": {
-   "Mtime": "2021-11-24T03:33:44.891194322Z",
-   "Atime": "2021-12-16T14:25:43.06055288Z",
-   "Ctime": "2021-11-24T03:33:44.891194322Z",
-   "Btime": "2021-11-24T03:33:44.891111776Z"
-  },
   "Hash": {
    "MD5": "b173bd1934797444b0f8658495ab0765",
    "SHA1": "75082bb8c6c3529a298b5e3432a2769362efe451",
    "SHA256": "771e8bef3711e8327b5ddb9c6109bd23e494488cccd31097e91033a427e413ef"
-  },
-  "_Source": "Generic.Detection.HashHunter"
+  }
  }
-]SELECT * FROM Artifact.Generic.Detection.HashHunter(TargetGlob=srcDir + "/artifacts/testdata/files/*", MD5List=MD5s,SizeMin=20000,SizeMax=30000)[
+]SELECT Name,Size,Hash FROM Artifact.Generic.Detection.HashHunter(TargetGlob=srcDir + "/artifacts/testdata/files/*", MD5List=MD5s,SizeMin=20000,SizeMax=30000)[
  {
-  "FullPath": "/Users/mgreen/git/velociraptor/artifacts/testdata/files/CSDump.bin",
   "Name": "CSDump.bin",
   "Size": 22000,
-  "Timestamps": {
-   "Mtime": "2021-11-24T03:33:27.127078928Z",
-   "Atime": "2021-12-16T14:25:41.819175104Z",
-   "Ctime": "2021-11-24T03:33:27.127078928Z",
-   "Btime": "2021-11-24T03:33:27.127017758Z"
-  },
   "Hash": {
    "MD5": "81d9b0a5308f6e46e06567ef9b889496",
    "SHA1": "ba4a435cff1897ac653b4c6af43c40b4d01c154c",
    "SHA256": "2227d7bd3c7a36a4d1d103e41df9a18798bf0d22b3e6357ee689d320fd318a24"
-  },
-  "_Source": "Generic.Detection.HashHunter"
+  }
  }
-]SELECT * FROM Artifact.Generic.Detection.HashHunter(TargetGlob=srcDir + "/artifacts/testdata/files/*", SHA256List=SHA256s,SizeMax=1000)[
+]SELECT Name,Size,Hash FROM Artifact.Generic.Detection.HashHunter(TargetGlob=srcDir + "/artifacts/testdata/files/*", SHA256List=SHA256s,SizeMax=1000)[
  {
-  "FullPath": "/Users/mgreen/git/velociraptor/artifacts/testdata/files/1.lnk",
   "Name": "1.lnk",
   "Size": 399,
-  "Timestamps": {
-   "Mtime": "2021-11-24T03:33:27.125724132Z",
-   "Atime": "2021-11-24T03:33:44.723152517Z",
-   "Ctime": "2021-11-24T03:33:27.125724132Z",
-   "Btime": "2021-11-24T03:33:27.125665453Z"
-  },
   "Hash": {
    "MD5": "533091d08258bf618871bf5d51858566",
    "SHA1": "c7ccf7f7c65e24137798b2af967620896bdc032c",
    "SHA256": "162e56481955b032cd7b146e0fb08f943dc6bb5ec135a47714de77604b3e032d"
-  },
-  "_Source": "Generic.Detection.HashHunter"
+  }
  },
  {
-  "FullPath": "/Users/mgreen/git/velociraptor/artifacts/testdata/files/CSShellcode.bin",
   "Name": "CSShellcode.bin",
   "Size": 888,
-  "Timestamps": {
-   "Mtime": "2021-11-24T03:33:44.891194322Z",
-   "Atime": "2021-12-16T14:25:43.06055288Z",
-   "Ctime": "2021-11-24T03:33:44.891194322Z",
-   "Btime": "2021-11-24T03:33:44.891111776Z"
-  },
   "Hash": {
    "MD5": "b173bd1934797444b0f8658495ab0765",
    "SHA1": "75082bb8c6c3529a298b5e3432a2769362efe451",
    "SHA256": "771e8bef3711e8327b5ddb9c6109bd23e494488cccd31097e91033a427e413ef"
-  },
-  "_Source": "Generic.Detection.HashHunter"
+  }
  }
 ]
