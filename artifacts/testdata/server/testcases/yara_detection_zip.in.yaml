@@ -1,4 +1,2 @@
 Queries:
-  - SELECT * FROM Artifact.Generic.Detection.Yara.Zip(TargetGlob= SrcDir + '/artifacts/testdata/files/compressedpe.zip')
-
-  #relpath(path=FullPath, base=srcDir, sep="/") as TestPath,Size, Rule,Mtime,Atime,Ctime,Btime
+  - SELECT relpath(path=FullPath, base=srcDir, sep="/") as TestContainer,ExtractedPath,FilePath,Hash,Size, Rule,Mtime,Atime,Ctime,Btime FROM Artifact.Generic.Detection.Yara.Zip(TargetGlob=srcDir + '/artifacts/testdata/files/compressedpe.zip')
