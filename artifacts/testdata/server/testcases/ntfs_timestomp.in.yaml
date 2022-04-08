@@ -43,6 +43,8 @@ Queries:
           srcDir+'/artifacts/testdata/files/test.ntfs.dd',
           srcDir+'/artifacts/testdata/files/test.ntfs.dd'
         ]), clear=TRUE)
-
+  - LET _2 <= SELECT mock(function='magic', results=['Mocked magic'])
   # Test MFT output
   - SELECT * FROM Artifact.Windows.NTFS.Timestomp(PathRegex='txt$')
+
+
