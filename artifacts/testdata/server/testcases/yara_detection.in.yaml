@@ -47,20 +47,6 @@ Queries:
               Size=17920,
               IsDir=false,
               IsLink=false
-            ),
-            dict(
-              Name='compressedpe.zip',
-              ModTime=timestamp(string='2021-06-21T05:57:50.184145696Z'),
-              OSPath=srcDir + '/artifacts/testdata/files/compressedpe.zip',
-              FullPath=srcDir + '/artifacts/testdata/files/compressedpe.zip',
-              Mtime=timestamp(string='2021-01-01T05:57:50.184145696Z'),
-              Btime=timestamp(string='2021-03-01T05:57:50.184086639Z'),
-              Ctime=timestamp(string='2021-03-21T05:57:50.184145696Z'),
-              Atime=timestamp(string='2021-03-21T05:57:50.184157002Z'),
-              Data=null,
-              Size=2268,
-              IsDir=false,
-              IsLink=false
             )]),
           -- First call to Windows.NTFS.MFT reveal target dll info
           -- srcDir needs to be used to align fields
@@ -106,5 +92,3 @@ Queries:
     FROM Artifact.Generic.Detection.Yara.Glob(DateAfter='2021-03-01', DateBefore='2021-07-01',YaraRule=IsPE)
   - SELECT relpath(path=FullPath, base=srcDir, sep="/") as TestPath,Size, Rule,Mtime,Atime,Ctime,Btime
     FROM Artifact.Generic.Detection.Yara.Glob(DateBefore='2021-04-01',YaraRule=IsPE)
-  - SELECT relpath(path=FullPath, base=srcDir, sep="/") as TestPath,Size, Rule,Mtime,Atime,Ctime,Btime
-    FROM Artifact.Generic.Detection.Yara.Zip(YaraRule=IsPE)
