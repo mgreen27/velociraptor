@@ -43,7 +43,7 @@ parameters:
 sources:
   - query: |
       -- find all MFT entries in scope
-      LET mft_entries <= SELECT *,OSPath,FileName,FileNames,EntryNumber,
+      LET mft_entries = SELECT *,OSPath,FileName,FileNames,EntryNumber,
             LastModified0x10,LastAccess0x10, LastRecordChange0x10,Created0x10, --SI used in test
             LastModified0x30,Created0x30, -- FN used in test
             IsDir,InUse,SI_Lt_FN,uSecZeros,
