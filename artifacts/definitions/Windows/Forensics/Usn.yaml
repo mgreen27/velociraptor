@@ -1,5 +1,4 @@
 name: Windows.Forensics.Usn
-author: "Matt Green - @mgreen27"
 description: |
   This artifact parses the NTFS USN journal and allows filters to 
   assist investigative workflow.
