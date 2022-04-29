@@ -125,7 +125,6 @@ SELECT FullPath FROM glob(globs="/*", accessor="ntfs")[
   "AdsName": "test.txt",
   "Size": 54,
   "HostObject": "\\\\.\\C:\\adstest\\test",
-  "HostIsDir": true,
   "AdsContent": "\"This is a test of a folder ADS! Its resident too!\" \r\n",
   "OSPath": "\\\\.\\C:\\adstest\\test:test.txt"
  }
