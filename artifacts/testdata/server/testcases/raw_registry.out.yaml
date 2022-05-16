@@ -48,9 +48,10 @@ SELECT mock(plugin='info', results=[dict(OS='windows'), dict(OS='windows')] ) FR
   "Publisher": "google inc.",
   "BinFileVersion": "72.0.3626.121"
  }
-]SELECT ModTime, KeyPath, Description, Path, _Parsed FROM Artifact.Windows.Forensics.Shellbags(SearchSpecs=[ dict( HiveGlob=srcDir+"/artifacts/testdata/files/UsrClass.dat", KeyGlob='''\Local Settings\Software\Microsoft\Windows\Shell\BagMRU\**'''),]) ORDER BY KeyPath[
+]SELECT ModTime, basename(path=Hive), KeyPath, Description, Path, _Parsed FROM Artifact.Windows.Forensics.Shellbags(SearchSpecs=[ dict( HiveGlob=srcDir+"/artifacts/testdata/files/UsrClass.dat", KeyGlob='''\Local Settings\Software\Microsoft\Windows\Shell\BagMRU\**'''),]) ORDER BY KeyPath[
  {
   "ModTime": "2021-06-01T06:28:19Z",
+  "basename(path=Hive)": "UsrClass.dat",
   "KeyPath": "\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\\0",
   "Description": {
    "ShortName": "My Computer",
@@ -72,6 +73,7 @@ SELECT mock(plugin='info', results=[dict(OS='windows'), dict(OS='windows')] ) FR
  },
  {
   "ModTime": "2021-06-01T06:28:19Z",
+  "basename(path=Hive)": "UsrClass.dat",
   "KeyPath": "\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\\1",
   "Description": {
    "ShortName": "My Computer",
@@ -93,6 +95,7 @@ SELECT mock(plugin='info', results=[dict(OS='windows'), dict(OS='windows')] ) FR
  },
  {
   "ModTime": "2021-06-01T06:27:57Z",
+  "basename(path=Hive)": "UsrClass.dat",
   "KeyPath": "\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\\1\\0",
   "Description": {
    "LongName": "",
@@ -117,6 +120,7 @@ SELECT mock(plugin='info', results=[dict(OS='windows'), dict(OS='windows')] ) FR
  },
  {
   "ModTime": "2021-06-01T06:28:19Z",
+  "basename(path=Hive)": "UsrClass.dat",
   "KeyPath": "\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\\2",
   "Description": {
    "ShortName": "My Computer",
@@ -138,6 +142,7 @@ SELECT mock(plugin='info', results=[dict(OS='windows'), dict(OS='windows')] ) FR
  },
  {
   "ModTime": "2021-06-01T06:28:19Z",
+  "basename(path=Hive)": "UsrClass.dat",
   "KeyPath": "\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\\3",
   "Description": {
    "ShortName": "My Computer",
@@ -159,6 +164,7 @@ SELECT mock(plugin='info', results=[dict(OS='windows'), dict(OS='windows')] ) FR
  },
  {
   "ModTime": "2021-06-01T06:28:10Z",
+  "basename(path=Hive)": "UsrClass.dat",
   "KeyPath": "\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\\3\\0",
   "Description": null,
   "Path": "My Computer -\u003e ?",
@@ -172,6 +178,7 @@ SELECT mock(plugin='info', results=[dict(OS='windows'), dict(OS='windows')] ) FR
  },
  {
   "ModTime": "2021-06-01T06:28:10Z",
+  "basename(path=Hive)": "UsrClass.dat",
   "KeyPath": "\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\\3\\0\\0",
   "Description": {
    "Type": "NetworkLocation",
@@ -194,6 +201,7 @@ SELECT mock(plugin='info', results=[dict(OS='windows'), dict(OS='windows')] ) FR
  },
  {
   "ModTime": "2021-06-01T06:28:12Z",
+  "basename(path=Hive)": "UsrClass.dat",
   "KeyPath": "\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\\3\\0\\0\\0",
   "Description": {
    "Type": [
@@ -253,6 +261,7 @@ SELECT mock(plugin='info', results=[dict(OS='windows'), dict(OS='windows')] ) FR
  },
  {
   "ModTime": "2021-06-01T06:28:19Z",
+  "basename(path=Hive)": "UsrClass.dat",
   "KeyPath": "\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU\\3\\0\\0\\0\\0",
   "Description": {
    "Type": [
@@ -308,6 +317,143 @@ SELECT mock(plugin='info', results=[dict(OS='windows'), dict(OS='windows')] ) FR
      "MFTSeq": 0
     }
    }
+  }
+ }
+]SELECT ParsedF, ParsedV FROM Artifact.Windows.Forensics.SAM( SAMPath=srcDir+"/artifacts/testdata/files/SAM")[
+ {
+  "ParsedF": {
+   "LastLoginDate": "1601-01-01T00:00:00Z",
+   "PasswordResetDate": "1601-01-01T00:00:00Z",
+   "PasswordFailDate": "1601-01-01T00:00:00Z",
+   "RID": 500,
+   "Flags": [
+    "Account Disabled",
+    "Normal user account",
+    "Password does not expire"
+   ],
+   "FailedLoginCount": 0,
+   "LoginCount": 0
+  },
+  "ParsedV": {
+   "AccountType": "0xf4",
+   "username": "Administrator",
+   "fullname": "",
+   "comment": "Built-in account for administering the computer/domain",
+   "driveletter": "",
+   "logon_script": "",
+   "profile_path": "",
+   "workstation": "",
+   "lmpwd_hash": "\u0002\u0002",
+   "ntpwd_hash": "\u0002\u0002"
+  }
+ },
+ {
+  "ParsedF": {
+   "LastLoginDate": "1601-01-01T00:00:00Z",
+   "PasswordResetDate": "1601-01-01T00:00:00Z",
+   "PasswordFailDate": "1601-01-01T00:00:00Z",
+   "RID": 501,
+   "Flags": [
+    "Account Disabled",
+    "Normal user account",
+    "Password does not expire",
+    "Password not required"
+   ],
+   "FailedLoginCount": 0,
+   "LoginCount": 0
+  },
+  "ParsedV": {
+   "AccountType": "0xe8",
+   "username": "Guest",
+   "fullname": "",
+   "comment": "Built-in account for guest access to the computer/domain",
+   "driveletter": "",
+   "logon_script": "",
+   "profile_path": "",
+   "workstation": "",
+   "lmpwd_hash": "\u0002\u0002",
+   "ntpwd_hash": "\u0002\u0002"
+  }
+ },
+ {
+  "ParsedF": {
+   "LastLoginDate": "1601-01-01T00:00:00Z",
+   "PasswordResetDate": "1601-01-01T00:00:00Z",
+   "PasswordFailDate": "1601-01-01T00:00:00Z",
+   "RID": 503,
+   "Flags": [
+    "Account Disabled",
+    "Normal user account",
+    "Password does not expire",
+    "Password not required"
+   ],
+   "FailedLoginCount": 0,
+   "LoginCount": 0
+  },
+  "ParsedV": {
+   "AccountType": "0x10c",
+   "username": "DefaultAccount",
+   "fullname": "",
+   "comment": "A user account managed by the system.",
+   "driveletter": "",
+   "logon_script": "",
+   "profile_path": "",
+   "workstation": "",
+   "lmpwd_hash": "\u0002\u0002",
+   "ntpwd_hash": "\u0002\u0002"
+  }
+ },
+ {
+  "ParsedF": {
+   "LastLoginDate": "1601-01-01T00:00:00Z",
+   "PasswordResetDate": "2021-10-08T00:50:53Z",
+   "PasswordFailDate": "1601-01-01T00:00:00Z",
+   "RID": 504,
+   "Flags": [
+    "Account Disabled",
+    "Normal user account"
+   ],
+   "FailedLoginCount": 0,
+   "LoginCount": 0
+  },
+  "ParsedV": {
+   "AccountType": "0x10c",
+   "username": "WDAGUtilityAccount",
+   "fullname": "",
+   "comment": "A user account managed and used by the system for Windows Defender Application Guard scenarios.",
+   "driveletter": "",
+   "logon_script": "",
+   "profile_path": "",
+   "workstation": "",
+   "lmpwd_hash": "\u0002\u0002",
+   "ntpwd_hash": "\u0002\u0002\u0010"
+  }
+ },
+ {
+  "ParsedF": {
+   "LastLoginDate": "2021-12-01T12:40:21Z",
+   "PasswordResetDate": "2021-10-07T08:07:32Z",
+   "PasswordFailDate": "2021-10-13T13:33:34Z",
+   "RID": 1001,
+   "Flags": [
+    "Normal user account",
+    "Password does not expire",
+    "Password not required"
+   ],
+   "FailedLoginCount": 0,
+   "LoginCount": 112
+  },
+  "ParsedV": {
+   "AccountType": "0xf4",
+   "username": "test",
+   "fullname": "",
+   "comment": "",
+   "driveletter": "",
+   "logon_script": "",
+   "profile_path": "",
+   "workstation": "",
+   "lmpwd_hash": "\u0002\u0002",
+   "ntpwd_hash": "\u0002\u0002\u0010"
   }
  }
 ]

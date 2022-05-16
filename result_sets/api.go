@@ -8,14 +8,29 @@ import (
 	"www.velocidex.com/golang/velociraptor/file_store/api"
 )
 
+type WriteMode bool
+
+const (
+	// Constants to improve readability at call sites
+	AppendMode   = WriteMode(false)
+	TruncateMode = WriteMode(true)
+)
+
 type ResultSetWriter interface {
+	// Write an already serialized batch of rows. This basically just
+	// appends the data to the output JSONL file so it is very cheap.
 	WriteJSONL(serialized []byte, total_rows uint64)
 	Write(row *ordereddict.Dict)
 	Flush()
 	Close()
+
+	// Ensures that results are flushed to storage as soon as the
+	// writer is closed.
+	SetSync()
 }
 
 type TimedResultSetWriter interface {
+	WriteJSONL(serialized []byte, total_rows int)
 	Write(row *ordereddict.Dict)
 	Flush()
 	Close()

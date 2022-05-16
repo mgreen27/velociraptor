@@ -24,8 +24,9 @@ import (
 
 	"github.com/Velocidex/ordereddict"
 	errors "github.com/pkg/errors"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	api_proto "www.velocidex.com/golang/velociraptor/api/proto"
-	"www.velocidex.com/golang/velociraptor/clients"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	constants "www.velocidex.com/golang/velociraptor/constants"
 	crypto_proto "www.velocidex.com/golang/velociraptor/crypto/proto"
@@ -36,6 +37,13 @@ import (
 	"www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/paths"
 	"www.velocidex.com/golang/velociraptor/services"
+)
+
+var (
+	clientCancellationCounter = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "client_flow_cancellations",
+		Help: "Total number of client cancellation messages sent.",
+	})
 )
 
 // Filter will be applied on flows to remove those we dont care about.
@@ -140,6 +148,12 @@ func GetFlowDetails(
 		return nil, err
 	}
 
+	ping := &flows_proto.PingContext{}
+	err = db.GetSubject(config_obj, flow_path_manager.Ping(), ping)
+	if err == nil && ping.ActiveTime > collection_context.ActiveTime {
+		collection_context.ActiveTime = ping.ActiveTime
+	}
+
 	availableDownloads, _ := availableDownloadFiles(config_obj, client_id, flow_id)
 	return &api_proto.FlowDetails{
 		Context:            collection_context,
@@ -232,16 +246,22 @@ func CancelFlow(
 	}
 
 	// Get all queued tasks for the client and delete only those in this flow.
-	tasks, err := clients.GetClientTasks(config_obj, client_id,
-		true /* do_not_lease */)
+	client_manager, err := services.GetClientInfoManager()
 	if err != nil {
 		return nil, err
 	}
 
-	// Cancel all the tasks
+	// Get all the tasks but only dequeue the ones intended for the
+	// cancelled flow.
+	tasks, err := client_manager.PeekClientTasks(client_id)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cancel all the relevant tasks
 	for _, task := range tasks {
 		if task.SessionId == flow_id {
-			err = clients.UnQueueMessageForClient(config_obj, client_id, task)
+			err = client_manager.UnQueueMessageForClient(client_id, task)
 			if err != nil {
 				return nil, err
 			}
@@ -250,16 +270,12 @@ func CancelFlow(
 
 	// Queue a cancellation message to the client for this flow
 	// id.
-	err = clients.QueueMessageForClient(config_obj, client_id,
+	clientCancellationCounter.Inc()
+	err = client_manager.QueueMessageForClient(client_id,
 		&crypto_proto.VeloMessage{
 			Cancel:    &crypto_proto.Cancel{},
 			SessionId: flow_id,
-		})
-	if err != nil {
-		return nil, err
-	}
-
-	err = services.GetNotifier().NotifyListener(config_obj, client_id)
+		}, true /* notify */, nil)
 	if err != nil {
 		return nil, err
 	}

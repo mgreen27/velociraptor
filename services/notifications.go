@@ -50,25 +50,25 @@ type Notifier interface {
 	// the Journal service.
 	ListenForNotification(id string) (chan bool, func())
 
-	// Send a notification to everyone - this is a global event
-	// directed at everyone. Only used in server shutdown - use
-	// NotifyByRegex instead.
-	NotifyAllListeners(config_obj *config_proto.Config) error
-
-	// Send a notification to all listeners with an id matching
-	// this regex.
-	NotifyByRegex(config_obj *config_proto.Config, regex string) error
-
 	// Send a notification to a specific listener based on its id
 	// that was registered above.
-	NotifyListener(config_obj *config_proto.Config, id string) error
+	NotifyListener(config_obj *config_proto.Config, id, tag string) error
 
-	// Check if there is someone listening for the specified
-	// id. This method queries all nodes to check if the client is
-	// connected.
+	// Notify a directly connected listener.
+	NotifyDirectListener(id string)
+
+	// Notify in the near future - no guarantee of delivery.
+	NotifyListenerAsync(config_obj *config_proto.Config, id, tag string)
+
+	// Check if there is someone listening for the specified id. This
+	// method queries all minion nodes to check if the client is
+	// connected anywhere - It may take up to 2 seconds to find out.
 	IsClientConnected(ctx context.Context,
 		config_obj *config_proto.Config,
 		client_id string, timeout int) bool
+
+	// Returns a list of all clients directly connected at present.
+	ListClients() []string
 
 	// Check only the current node if the client is connected.
 	IsClientDirectlyConnected(client_id string) bool

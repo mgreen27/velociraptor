@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Velocidex/ordereddict"
+	"www.velocidex.com/golang/velociraptor/accessors"
 	"www.velocidex.com/golang/velociraptor/acls"
 	actions_proto "www.velocidex.com/golang/velociraptor/actions/proto"
 	api_proto "www.velocidex.com/golang/velociraptor/api/proto"
@@ -18,11 +19,9 @@ import (
 	"www.velocidex.com/golang/velociraptor/datastore"
 	"www.velocidex.com/golang/velociraptor/file_store"
 	flows_proto "www.velocidex.com/golang/velociraptor/flows/proto"
-	"www.velocidex.com/golang/velociraptor/glob"
 	"www.velocidex.com/golang/velociraptor/paths"
 	artifact_paths "www.velocidex.com/golang/velociraptor/paths/artifacts"
 	"www.velocidex.com/golang/velociraptor/result_sets"
-	"www.velocidex.com/golang/velociraptor/search"
 	"www.velocidex.com/golang/velociraptor/services"
 	"www.velocidex.com/golang/velociraptor/services/launcher"
 	"www.velocidex.com/golang/velociraptor/utils"
@@ -65,6 +64,12 @@ func (self ImportCollectionFunction) Call(ctx context.Context,
 		return vfilter.Null{}
 	}
 
+	err = vql_subsystem.CheckFilesystemAccess(scope, arg.Accessor)
+	if err != nil {
+		scope.Log("import_collection: %s", err)
+		return vfilter.Null{}
+	}
+
 	db, err := datastore.GetDB(config_obj)
 	if err != nil {
 		scope.Log("import_collection: %v", err)
@@ -80,8 +85,14 @@ func (self ImportCollectionFunction) Call(ctx context.Context,
 		}
 	}
 
-	api_client, err := search.GetApiClient(ctx,
-		config_obj, arg.ClientId, false /* detailed */)
+	indexer, err := services.GetIndexer()
+	if err != nil {
+		scope.Log("import_collection: %v", err)
+		return vfilter.Null{}
+	}
+
+	api_client, err := indexer.FastGetApiClient(ctx,
+		config_obj, arg.ClientId)
 	if err != nil || api_client.AgentInformation == nil ||
 		api_client.AgentInformation.Name == "" {
 		scope.Log("import_collection: client_id not known")
@@ -102,7 +113,7 @@ func (self ImportCollectionFunction) Call(ctx context.Context,
 	}
 
 	// Open the zip file we are importing.
-	accessor, err := glob.GetAccessor(arg.Accessor, scope)
+	accessor, err := accessors.GetAccessor(arg.Accessor, scope)
 	if err != nil {
 		scope.Log("import_collection: %v", err)
 		return vfilter.Null{}
@@ -121,7 +132,7 @@ func (self ImportCollectionFunction) Call(ctx context.Context,
 		return vfilter.Null{}
 	}
 
-	zipfile, err := zip.NewReader(utils.ReaderAtter{fd}, st.Size())
+	zipfile, err := zip.NewReader(utils.MakeReaderAtter(fd), st.Size())
 	if err != nil {
 		scope.Log("import_collection: %v", err)
 		return vfilter.Null{}
@@ -146,7 +157,7 @@ func (self ImportCollectionFunction) Call(ctx context.Context,
 
 	uploaded_files_result_set, err := result_sets.NewResultSetWriter(
 		file_store_factory, path_manager.UploadMetadata(),
-		nil, true /* truncate */)
+		nil, utils.SyncCompleter, true /* truncate */)
 	if err != nil {
 		scope.Log("import_collection: %v", err)
 		return vfilter.Null{}
@@ -155,7 +166,7 @@ func (self ImportCollectionFunction) Call(ctx context.Context,
 
 	log_result_set, err := result_sets.NewResultSetWriter(
 		file_store_factory, path_manager.Log(),
-		nil, true /* truncate */)
+		nil, utils.SyncCompleter, true /* truncate */)
 	if err != nil {
 		scope.Log("import_collection: %v", err)
 		return vfilter.Null{}
@@ -218,7 +229,7 @@ func (self ImportCollectionFunction) Call(ctx context.Context,
 				rs_writer, err := result_sets.NewResultSetWriter(
 					file_store_factory,
 					artifact_path_manager.Path(),
-					nil, true /* truncate */)
+					nil, utils.SyncCompleter, true /* truncate */)
 				if err != nil {
 					log("Error copying %v", err)
 					return
@@ -340,10 +351,15 @@ func getExistingClientOrNewClient(
 	config_obj *config_proto.Config,
 	hostname string) (string, error) {
 
+	indexer, err := services.GetIndexer()
+	if err != nil {
+		return "", err
+	}
+
 	scope.Log("Searching for a client id with name '%v'", hostname)
 
 	// Search for an existing client with the same hostname
-	search_resp, err := search.SearchClients(ctx, config_obj,
+	search_resp, err := indexer.SearchClients(ctx, config_obj,
 		&api_proto.SearchClientsRequest{Query: "host:" + hostname}, "")
 	if err == nil && len(search_resp.Items) > 0 {
 		client_id := search_resp.Items[0].ClientId
@@ -380,12 +396,18 @@ func makeNewClient(
 		return "", err
 	}
 
+	indexer, err := services.GetIndexer()
+	if err != nil {
+		return "", err
+	}
+
 	client_path_manager := paths.NewClientPathManager(client_id)
 	err = db.SetSubject(config_obj,
 		client_path_manager.Path(), client_info)
 	if err != nil {
 		return "", err
 	}
+
 	// Add the new client to the index.
 	for _, term := range []string{
 		"all", // This is used for "." search
@@ -393,7 +415,7 @@ func makeNewClient(
 		"host:" + client_info.Fqdn,
 		"host:" + client_info.Hostname,
 	} {
-		err = search.SetIndex(config_obj, client_id, term)
+		err = indexer.SetIndex(client_id, term)
 		if err != nil {
 			return client_id, err
 		}

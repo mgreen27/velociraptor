@@ -29,6 +29,7 @@ import (
 
 	"github.com/Velocidex/ordereddict"
 	"www.velocidex.com/golang/go-pe"
+	"www.velocidex.com/golang/velociraptor/accessors"
 	"www.velocidex.com/golang/velociraptor/acls"
 	"www.velocidex.com/golang/velociraptor/constants"
 	"www.velocidex.com/golang/velociraptor/utils"
@@ -39,9 +40,9 @@ import (
 )
 
 type AuthenticodeArgs struct {
-	Accessor string `vfilter:"optional,field=accessor,doc=The accessor to use."`
-	Filename string `vfilter:"required,field=filename,doc=The filename to parse."`
-	Verbose  bool   `vfilter:"optional,field=verbose,doc=Set to receive verbose information about all the certs."`
+	Accessor string            `vfilter:"optional,field=accessor,doc=The accessor to use."`
+	Filename *accessors.OSPath `vfilter:"required,field=filename,doc=The filename to parse."`
+	Verbose  bool              `vfilter:"optional,field=verbose,doc=Set to receive verbose information about all the certs."`
 }
 
 type AuthenticodeFunction struct{}
@@ -79,7 +80,7 @@ func (self *AuthenticodeFunction) Call(ctx context.Context,
 		return &vfilter.Null{}
 	}
 
-	normalized_path := GetNativePath(arg.Filename)
+	normalized_path := arg.Filename.String()
 
 	output := ordereddict.NewDict().
 		Set("Filename", normalized_path).
@@ -120,7 +121,13 @@ func (self *AuthenticodeFunction) Call(ctx context.Context,
 	if err == nil {
 		defer fd.Close()
 
-		cat_file, err := VerifyCatalogSignature(fd, normalized_path, output)
+		config_obj, ok := vql_subsystem.GetServerConfig(scope)
+		if !ok {
+			return &vfilter.Null{}
+		}
+
+		cat_file, err := VerifyCatalogSignature(
+			config_obj, fd, normalized_path, output)
 		if err == nil {
 			_ = ParseCatFile(cat_file, output, arg.Verbose)
 		}

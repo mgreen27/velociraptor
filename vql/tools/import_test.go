@@ -12,7 +12,6 @@ import (
 	"www.velocidex.com/golang/velociraptor/flows/proto"
 	flows_proto "www.velocidex.com/golang/velociraptor/flows/proto"
 	"www.velocidex.com/golang/velociraptor/logging"
-	"www.velocidex.com/golang/velociraptor/search"
 	"www.velocidex.com/golang/velociraptor/services"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
 )
@@ -20,7 +19,7 @@ import (
 func (self *TestSuite) TestImportCollection() {
 	manager, _ := services.GetRepositoryManager()
 	repository, _ := manager.GetGlobalRepository(self.ConfigObj)
-	_, err := repository.LoadYaml(CustomTestArtifactDependent, true)
+	_, err := repository.LoadYaml(CustomTestArtifactDependent, true, true)
 	assert.NoError(self.T(), err)
 
 	builder := services.ScopeBuilder{
@@ -58,10 +57,11 @@ func (self *TestSuite) TestImportCollection() {
 	assert.Equal(self.T(), flows_proto.ArtifactCollectorContext_FINISHED,
 		context.State)
 
-	search.WaitForIndex()
+	indexer, err := services.GetIndexer()
+	assert.NoError(self.T(), err)
 
 	// Check the indexes are correct for the new client_id
-	search_resp, err := search.SearchClients(ctx, self.ConfigObj,
+	search_resp, err := indexer.SearchClients(ctx, self.ConfigObj,
 		&api_proto.SearchClientsRequest{Query: "host:MyNewHost"}, "")
 	assert.NoError(self.T(), err)
 

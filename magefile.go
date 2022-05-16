@@ -39,6 +39,7 @@ var (
 		"artifacts/b0x.yaml":        "artifacts/assets/ab0x.go",
 		"config/b0x.yaml":           "config/ab0x.go",
 		"gui/velociraptor/b0x.yaml": "gui/velociraptor/ab0x.go",
+		"crypto/b0x.yaml":           "crypto/ab0x.go",
 	}
 
 	// apt-get install gcc-mingw-w64-x86-64
@@ -251,6 +252,15 @@ func Aix() error {
 	}.Run()
 }
 
+func PPCLinux() error {
+	return Builder{
+		extra_tags:  " release yara ",
+		goos:        "linux",
+		disable_cgo: true,
+		arch:        "ppc64le",
+	}.Run()
+}
+
 func Arm() error {
 	return Builder{
 		extra_tags:  " release yara ",
@@ -277,6 +287,7 @@ func Windows() error {
 		arch:       "amd64"}.Run()
 }
 
+// Windows client without a gui.
 func WindowsBare() error {
 	return Builder{
 		extra_tags: " release yara disable_gui ",
@@ -325,41 +336,17 @@ func DarwinM1() error {
 		arch:       "arm64"}.Run()
 }
 
+func LinuxM1() error {
+	return Builder{goos: "linux",
+		extra_tags:  " release yara ",
+		disable_cgo: true,
+		arch:        "arm64"}.Run()
+}
 func DarwinBase() error {
 	return Builder{goos: "darwin",
 		extra_tags:  " release ",
 		disable_cgo: true,
 		arch:        "amd64"}.Run()
-}
-
-// Build step for Appveyor.
-func Appveyor() error {
-	err := build_gui_files()
-	if err != nil {
-		return err
-	}
-
-	err = Builder{
-		goos:       "windows",
-		arch:       "amd64",
-		extra_tags: " release ",
-		filename:   "velociraptor.exe"}.Run()
-
-	if err != nil {
-		return err
-	}
-
-	return nil
-
-	// Build a linux binary on Appveyor without cgo. This is
-	// typically OK because it is mostly used for the server. It
-	// will be missing yara etc.
-	return Builder{
-		goos:        "linux",
-		arch:        "amd64",
-		extra_tags:  " release ",
-		disable_cgo: true,
-		filename:    "velociraptor-linux.elf"}.Run()
 }
 
 func Clean() error {
@@ -385,7 +372,7 @@ func build_gui_files() error {
 		return err
 	}
 
-	err = sh.RunV("npm", "install")
+	err = sh.RunV("npm", "ci")
 	if err != nil {
 		return err
 	}
@@ -395,7 +382,18 @@ func build_gui_files() error {
 
 func flags() string {
 	timestamp := time.Now().Format(time.RFC3339)
-	return fmt.Sprintf(`-X "www.velocidex.com/golang/velociraptor/config.build_time=%s" -X "www.velocidex.com/golang/velociraptor/config.commit_hash=%s"`, timestamp, hash())
+	flags := fmt.Sprintf(` -X "www.velocidex.com/golang/velociraptor/config.build_time=%s"`, timestamp)
+
+	flags += fmt.Sprintf(` -X "www.velocidex.com/golang/velociraptor/config.commit_hash=%s"`, hash())
+
+	// If we are running on the CI pipeline we need to know the run
+	// number and URL so we can report them.
+	if os.Getenv("GITHUB_SERVER_URL") != "" {
+		flags += fmt.Sprintf(` -X "www.velocidex.com/golang/velociraptor/config.ci_run_url=%s"`,
+			os.ExpandEnv("$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"))
+	}
+
+	return flags
 }
 
 // hash returns the git hash for the current repo or "" if none.

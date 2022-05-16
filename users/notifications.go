@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/Velocidex/ordereddict"
-	"github.com/golang/protobuf/jsonpb"
+	"google.golang.org/protobuf/encoding/protojson"
 	api_proto "www.velocidex.com/golang/velociraptor/api/proto"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/file_store"
@@ -97,7 +97,7 @@ func (self *UserNotificationManager) HandleNotification(
 			return
 		}
 
-		writer, err = csv.GetCSVWriter(self.scope, fd)
+		writer, err = csv.GetCSVWriter(self.config_obj, self.scope, fd)
 		if err != nil {
 			return
 		}
@@ -105,8 +105,11 @@ func (self *UserNotificationManager) HandleNotification(
 		self.writers[message.Username] = writer
 	}
 
-	marshaler := &jsonpb.Marshaler{Indent: " "}
-	serialized, err := marshaler.MarshalToString(message)
+	marshaler := &protojson.MarshalOptions{
+		Indent:        " ",
+		UseProtoNames: true,
+	}
+	serialized, err := marshaler.Marshal(message)
 	if err != nil {
 		return
 	}

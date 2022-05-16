@@ -33,32 +33,35 @@ import (
 var (
 	build_time  string
 	commit_hash string
+	ci_run_url  string
 )
 
 // Return the location of the writeback file.
-func WritebackLocation(self *config_proto.Config) (string, error) {
-	if self.Client == nil {
+func WritebackLocation(self *config_proto.ClientConfig) (string, error) {
+	if self == nil {
 		return "", errors.New("Client not configured")
 	}
 
 	switch runtime.GOOS {
 	case "darwin":
-		return os.ExpandEnv(self.Client.WritebackDarwin), nil
+		return os.ExpandEnv(self.WritebackDarwin), nil
 	case "linux":
-		return os.ExpandEnv(self.Client.WritebackLinux), nil
+		return os.ExpandEnv(self.WritebackLinux), nil
 	case "windows":
-		return os.ExpandEnv(self.Client.WritebackWindows), nil
+		return os.ExpandEnv(self.WritebackWindows), nil
 	default:
-		return os.ExpandEnv(self.Client.WritebackLinux), nil
+		return os.ExpandEnv(self.WritebackLinux), nil
 	}
 }
 
 func GetVersion() *config_proto.Version {
 	return &config_proto.Version{
-		Name:      "velociraptor",
-		Version:   constants.VERSION,
-		BuildTime: build_time,
-		Commit:    commit_hash,
+		Name:       "velociraptor",
+		Version:    constants.VERSION,
+		BuildTime:  build_time,
+		Commit:     commit_hash,
+		CiBuildUrl: ci_run_url,
+		Compiler:   runtime.Version(),
 	}
 }
 
@@ -156,9 +159,21 @@ func GetDefaultConfig() *config_proto.Config {
 			Location:           "/var/tmp/velociraptor/",
 			FilestoreDirectory: "/var/tmp/velociraptor/",
 		},
-		Writeback: &config_proto.Writeback{},
-		Mail:      &config_proto.MailConfig{},
-		Logging:   &config_proto.LoggingConfig{},
+		Logging: &config_proto.LoggingConfig{
+			// Disable debug logging by default.
+			Debug: &config_proto.LoggingRetentionConfig{
+				Disabled: true,
+			},
+			Info: &config_proto.LoggingRetentionConfig{
+				RotationTime: 7 * 24 * 60 * 60,   // 7 days
+				MaxAge:       365 * 24 * 60 * 60, // One year
+			},
+			Error: &config_proto.LoggingRetentionConfig{
+				RotationTime: 7 * 24 * 60 * 60,   // 7 days
+				MaxAge:       365 * 24 * 60 * 60, // One year
+			},
+			SeparateLogsPerComponent: true,
+		},
 		Monitoring: &config_proto.MonitoringConfig{
 			BindAddress: "127.0.0.1",
 			BindPort:    8003,
@@ -191,27 +206,6 @@ func WriteConfigToFile(filename string, config *config_proto.Config) error {
 	}
 	// Make sure the new file is only readable by root.
 	err = ioutil.WriteFile(filename, bytes, 0600)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	return nil
-}
-
-// Update the client's writeback file.
-func UpdateWriteback(config_obj *config_proto.Config) error {
-	location, err := WritebackLocation(config_obj)
-	if err != nil {
-		return err
-	}
-
-	bytes, err := yaml.Marshal(config_obj.Writeback)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	// Make sure the new file is only readable by root.
-	err = ioutil.WriteFile(location, bytes, 0600)
 	if err != nil {
 		return errors.WithStack(err)
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -17,16 +18,23 @@ import (
 	"github.com/Velocidex/yaml/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/stretchr/testify/suite"
 	"www.velocidex.com/golang/velociraptor/config"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/constants"
 	"www.velocidex.com/golang/velociraptor/file_store"
 	"www.velocidex.com/golang/velociraptor/paths"
+	"www.velocidex.com/golang/velociraptor/utils"
 )
 
+var (
+	cwd string
+)
+
+func init() {
+	cwd, _ = os.Getwd()
+}
+
 type CollectorTestSuite struct {
-	suite.Suite
 	binary      string
 	extension   string
 	tmpdir      string
@@ -35,46 +43,59 @@ type CollectorTestSuite struct {
 	test_server *httptest.Server
 }
 
-func (self *CollectorTestSuite) SetupTest() {
+func CollectorSetupTest(t *testing.T) *CollectorTestSuite {
+	self := &CollectorTestSuite{}
+
 	if runtime.GOOS == "windows" {
 		self.extension = ".exe"
 	}
 
 	// Search for a valid binary to run.
 	binaries, err := filepath.Glob(
-		"../output/velociraptor*" + constants.VERSION + "-" + runtime.GOOS +
-			"-" + runtime.GOARCH + self.extension)
-	assert.NoError(self.T(), err)
+		filepath.Join(cwd,
+			"..", "output", "velociraptor*"+constants.VERSION+"-"+runtime.GOOS+
+				"-"+runtime.GOARCH+self.extension))
+	assert.NoError(t, err)
 
 	if len(binaries) == 0 {
-		binaries, _ = filepath.Glob("../output/velociraptor*" +
-			self.extension)
+		binaries, _ = filepath.Glob(
+			filepath.Join(cwd, "..", "output", "velociraptor*"+self.extension))
 	}
 
 	self.binary, _ = filepath.Abs(binaries[0])
 	fmt.Printf("Found binary %v\n", self.binary)
 
 	self.tmpdir, err = ioutil.TempDir("", "tmp")
-	assert.NoError(self.T(), err)
+	assert.NoError(t, err)
+
+	// Copy the binary into the tmpdir
+	dest_file := filepath.Join(self.tmpdir, filepath.Base(self.binary))
+	err = utils.CopyFile(context.Background(), self.binary, dest_file, 0644)
+	assert.NoError(t, err)
+
+	self.binary = dest_file
 
 	self.config_file = filepath.Join(self.tmpdir, "server.config.yaml")
 	fd, err := os.OpenFile(
 		self.config_file, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0700)
-	assert.NoError(self.T(), err)
+	assert.NoError(t, err)
 
 	self.config_obj, err = new(config.Loader).
 		WithFileLoader("../http_comms/test_data/server.config.yaml").
 		LoadAndValidate()
-	assert.NoError(self.T(), err)
+	assert.NoError(t, err)
 
 	self.config_obj.Datastore.Implementation = "FileBaseDataStore"
 	self.config_obj.Datastore.Location = self.tmpdir
 	self.config_obj.Datastore.FilestoreDirectory = self.tmpdir
 	self.config_obj.Frontend.DoNotCompressArtifacts = true
 
-	// Start a web server that serves the filesystem
+	// Start a web server that serves the filesystem - NOTE: Normally
+	// this would be served from the Velociraptor server itself but
+	// here we dont want to start it so we serve simple HTTP server
+	// and require all tools to be served remotes from these URL.
 	self.test_server = httptest.NewServer(
-		http.FileServer(http.Dir(filepath.Dir(self.binary))))
+		http.FileServer(http.Dir(self.tmpdir)))
 
 	// Set the server URL correctly.
 	self.config_obj.Client.ServerUrls = []string{
@@ -82,11 +103,12 @@ func (self *CollectorTestSuite) SetupTest() {
 	}
 
 	serialized, err := yaml.Marshal(self.config_obj)
-	assert.NoError(self.T(), err)
+	assert.NoError(t, err)
 
 	fd.Write(serialized)
 	fd.Close()
 
+	return self
 }
 
 func (self *CollectorTestSuite) TearDownTest() {
@@ -94,7 +116,12 @@ func (self *CollectorTestSuite) TearDownTest() {
 	self.test_server.Close()
 }
 
-func (self *CollectorTestSuite) TestCollector() {
+func TestCollector(t *testing.T) {
+	t.Parallel()
+
+	self := CollectorSetupTest(t)
+	defer self.TearDownTest()
+
 	OS_TYPE := "Linux"
 	if runtime.GOOS == "windows" {
 		OS_TYPE = "Windows"
@@ -113,26 +140,38 @@ func (self *CollectorTestSuite) TestCollector() {
 
 	fd, err := file_store_factory.WriteFile(paths.GetArtifactDefintionPath(
 		"Custom.TestArtifactDependent"))
-	assert.NoError(self.T(), err)
+	assert.NoError(t, err)
 
 	fd.Truncate()
 	fd.Write([]byte(`name: Custom.TestArtifactDependent
 tools:
   - name: MyTool
+  - name: MyDataFile
 
 sources:
  - query: |
      LET binary <= SELECT FullPath, Name
          FROM Artifact.Generic.Utils.FetchBinary(
               ToolName="MyTool", SleepDuration='0')
-     SELECT "Foobar", Stdout, binary[0].Name
+
+     LET data_file <= SELECT FullPath, Name
+         FROM Artifact.Generic.Utils.FetchBinary(
+              ToolName="MyDataFile", SleepDuration='0',
+              IsExecutable=FALSE)
+
+     LET _ <= sleep(time=1)
+
+     SELECT "Foobar", Stdout, binary[0].Name,
+            data_file[0].FullPath AS DataFilePath,
+            data_file[0].FullPath =~ ".yar$" AS HasYarExtension,
+            read_file(filename=data_file[0].FullPath) AS Data
      FROM execve(argv=[binary[0].FullPath, "artifacts", "list"])
 `))
 	fd.Close()
 
 	fd, err = file_store_factory.WriteFile(
 		paths.GetArtifactDefintionPath("Custom.TestArtifact"))
-	assert.NoError(self.T(), err)
+	assert.NoError(t, err)
 
 	fd.Truncate()
 	fd.Write([]byte(`name: Custom.TestArtifact
@@ -175,7 +214,7 @@ reports:
 		"artifacts", "show", "Custom.TestArtifact")
 	out, err := cmd.CombinedOutput()
 	fmt.Println(string(out))
-	require.NoError(self.T(), err)
+	require.NoError(t, err)
 
 	var os_name string
 	for _, os_name = range []string{"Windows", "Windows_x86", "Linux", "Darwin"} {
@@ -185,7 +224,7 @@ reports:
 			"--serve_remote")
 		out, err = cmd.CombinedOutput()
 		fmt.Println(string(out))
-		require.NoError(self.T(), err)
+		require.NoError(t, err)
 	}
 
 	switch runtime.GOOS {
@@ -203,15 +242,15 @@ reports:
 		"--serve_remote")
 	out, err = cmd.CombinedOutput()
 	fmt.Println(string(out))
-	require.NoError(self.T(), err)
+	require.NoError(t, err)
 
 	// Make sure the binary is proprly added.
-	assert.Regexp(self.T(), "name: Velociraptor", string(out))
+	assert.Regexp(t, "name: Velociraptor", string(out))
 
 	// Not served locally - download on demand should have no hash
 	// and serve_locally should be false.
-	assert.NotRegexp(self.T(), "serve_locally", string(out))
-	assert.NotRegexp(self.T(), "hash: .+", string(out))
+	assert.NotRegexp(t, "serve_locally", string(out))
+	assert.NotRegexp(t, "hash: .+", string(out))
 
 	cmd = exec.Command(self.binary, "--config", self.config_file,
 		"tools", "upload", "--name", "MyTool",
@@ -219,7 +258,25 @@ reports:
 		"--serve_remote")
 	out, err = cmd.CombinedOutput()
 	fmt.Println(string(out))
-	require.NoError(self.T(), err)
+	require.NoError(t, err)
+
+	// Create an embedded data file
+	data_file_name := filepath.Join(self.tmpdir, "test.yar")
+	{
+		fd, err := os.OpenFile(data_file_name,
+			os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+		assert.NoError(t, err)
+		fd.Write([]byte("Hello world"))
+		fd.Close()
+	}
+
+	cmd = exec.Command(self.binary, "--config", self.config_file,
+		"tools", "upload", "--name", "MyDataFile",
+		self.test_server.URL+"/test.yar",
+		"--serve_remote")
+	out, err = cmd.CombinedOutput()
+	fmt.Println(string(out))
+	require.NoError(t, err)
 
 	output_zip := filepath.Join(self.tmpdir, "output.zip")
 
@@ -240,10 +297,10 @@ reports:
 	cmd = exec.Command(self.binary, cmdline...)
 	out, err = cmd.CombinedOutput()
 	fmt.Println(string(out))
-	require.NoError(self.T(), err)
+	require.NoError(t, err)
 
 	r, err := zip.OpenReader(output_zip)
-	assert.NoError(self.T(), err)
+	assert.NoError(t, err)
 
 	defer r.Close()
 
@@ -257,14 +314,14 @@ reports:
 			fmt.Printf("Extracting %v to %v\n", f.Name, output_executable)
 
 			rc, err := f.Open()
-			assert.NoError(self.T(), err)
+			assert.NoError(t, err)
 
 			out_fd, err := os.OpenFile(
 				output_executable, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0700)
-			assert.NoError(self.T(), err)
+			assert.NoError(t, err)
 
 			n, err := io.Copy(out_fd, rc)
-			assert.NoError(self.T(), err)
+			assert.NoError(t, err)
 			rc.Close()
 			out_fd.Close()
 
@@ -277,71 +334,77 @@ reports:
 	cmd = exec.Command(output_executable, "config", "show")
 	out, err = cmd.CombinedOutput()
 	fmt.Println(string(out))
-	require.NoError(self.T(), err)
+	require.NoError(t, err)
 
 	// Now just run the executable.
 	cmd = exec.Command(output_executable)
 	out, err = cmd.CombinedOutput()
 	fmt.Println(string(out))
-	require.NoError(self.T(), err)
+	require.NoError(t, err)
 
 	// There should be a collection now.
 	zip_files, err := filepath.Glob("Collection-*.zip")
-	assert.NoError(self.T(), err)
-	assert.Equal(self.T(), 1, len(zip_files))
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(zip_files))
 
 	// Inspect the collection zip file - there should be a single
 	// artifact output from our custom artifact, and the data it
 	// produces should have the string Foobar in it.
 	r, err = zip.OpenReader(zip_files[0])
-	assert.NoError(self.T(), err)
+	assert.NoError(t, err)
 
-	assert.True(self.T(), len(r.File) > 0)
+	assert.True(t, len(r.File) > 0)
 
 	for _, f := range r.File {
 		fmt.Printf("Contents of %s:\n", f.Name)
-		assert.Equal(self.T(), f.Name, "Custom.TestArtifact.json")
+		assert.Equal(t, f.Name, "Custom.TestArtifact.json")
 
 		rc, err := f.Open()
-		assert.NoError(self.T(), err)
+		assert.NoError(t, err)
 
 		data, err := ioutil.ReadAll(rc)
-		assert.NoError(self.T(), err)
-		assert.Contains(self.T(), string(data), "Foobar")
+		assert.NoError(t, err)
+
+		// Make sure the data from the artifact contains the following
+		// strings:
+		// Foobar column:
+		assert.Contains(t, string(data), "Foobar")
+
+		// Content of packed data file
+		assert.Contains(t, string(data), `"Data":"Hello world"`)
+
+		// Make sure the data file has the .yar extension
+		assert.Contains(t, string(data), `"HasYarExtension":true`)
 	}
 
 	// Inspect the produced HTML report.
 	html_files, err := filepath.Glob("Collection-*.html")
-	assert.NoError(self.T(), err)
-	assert.Equal(self.T(), 1, len(html_files))
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(html_files))
 
 	html_fd, err := os.Open(html_files[0])
-	assert.NoError(self.T(), err)
+	assert.NoError(t, err)
 
 	data, err := ioutil.ReadAll(html_fd)
-	assert.NoError(self.T(), err)
+	assert.NoError(t, err)
 
 	// Ensure the report contains the data that was passed.
-	assert.Contains(self.T(), string(data), "MyValue")
+	assert.Contains(t, string(data), "MyValue")
 
 	// And the default parameter is still there.
-	assert.Contains(self.T(), string(data), "DefaultMyDefaultParameter")
+	assert.Contains(t, string(data), "DefaultMyDefaultParameter")
 
-	assert.Contains(self.T(), string(data), "Foobar")
-	assert.Contains(self.T(), string(data), "This is the report")
+	assert.Contains(t, string(data), "Foobar")
+	assert.Contains(t, string(data), "This is the report")
 
 	// Make sure we found the artifact in the report
-	assert.Contains(self.T(), string(data), "Windows.System.TaskScheduler")
-	assert.Contains(self.T(), string(data), "Found a Scheduled Task")
+	assert.Contains(t, string(data), "Windows.System.TaskScheduler")
+	assert.Contains(t, string(data), "Found a Scheduled Task")
 
 	// Check that we used the default template from the
 	// Reporting.Default artifact:
-	assert.Contains(self.T(), string(data), "<html>")
-	assert.Contains(self.T(), string(data), "This is the html report template")
+	assert.Contains(t, string(data), "<html>")
+	assert.Contains(t, string(data), "This is the html report template")
 
 	// fmt.Println(string(data))
-}
-
-func TestCollector(t *testing.T) {
-	suite.Run(t, &CollectorTestSuite{})
 }

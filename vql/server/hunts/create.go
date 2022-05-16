@@ -45,6 +45,8 @@ type ScheduleHuntFunctionArg struct {
 	Spec          vfilter.Any      `vfilter:"optional,field=spec,doc=Parameters to apply to the artifacts"`
 	Timeout       uint64           `vfilter:"optional,field=timeout,doc=Set query timeout (default 10 min)"`
 	OpsPerSecond  float64          `vfilter:"optional,field=ops_per_sec,doc=Set query ops_per_sec value"`
+	CpuLimit      float64          `vfilter:"optional,field=cpu_limit,doc=Set query ops_per_sec value"`
+	IopsLimit     float64          `vfilter:"optional,field=iops_limit,doc=Set query ops_per_sec value"`
 	MaxRows       uint64           `vfilter:"optional,field=max_rows,doc=Max number of rows to fetch"`
 	MaxBytes      uint64           `vfilter:"optional,field=max_bytes,doc=Max number of bytes to upload"`
 	Pause         bool             `vfilter:"optional,field=pause,doc=If specified the new hunt will be in the paused state"`
@@ -60,14 +62,14 @@ func (self *ScheduleHuntFunction) Call(ctx context.Context,
 
 	err := vql_subsystem.CheckAccess(scope, acls.COLLECT_CLIENT)
 	if err != nil {
-		scope.Log("hunt: %s", err)
+		scope.Log("hunt: %v", err)
 		return vfilter.Null{}
 	}
 
 	arg := &ScheduleHuntFunctionArg{}
 	err = arg_parser.ExtractArgsWithContext(ctx, scope, args, arg)
 	if err != nil {
-		scope.Log("hunt: %s", err.Error())
+		scope.Log("hunt: %v", err)
 		return vfilter.Null{}
 	}
 
@@ -96,12 +98,12 @@ func (self *ScheduleHuntFunction) Call(ctx context.Context,
 
 	manager, err := services.GetRepositoryManager()
 	if err != nil {
-		scope.Log("Command can only run on the server")
+		scope.Log("hunt: %v", err)
 		return vfilter.Null{}
 	}
 	repository, err := manager.GetGlobalRepository(config_obj)
 	if err != nil {
-		scope.Log("Command can only run on the server")
+		scope.Log("hunt: %v", err)
 		return vfilter.Null{}
 	}
 
@@ -109,6 +111,8 @@ func (self *ScheduleHuntFunction) Call(ctx context.Context,
 		Creator:        vql_subsystem.GetPrincipal(scope),
 		Artifacts:      arg.Artifacts,
 		OpsPerSecond:   float32(arg.OpsPerSecond),
+		CpuLimit:       float32(arg.CpuLimit),
+		IopsLimit:      float32(arg.IopsLimit),
 		Timeout:        arg.Timeout,
 		MaxRows:        arg.MaxRows,
 		MaxUploadBytes: arg.MaxBytes,
@@ -117,7 +121,7 @@ func (self *ScheduleHuntFunction) Call(ctx context.Context,
 	err = tools.AddSpecProtobuf(config_obj, repository, scope,
 		arg.Spec, request)
 	if err != nil {
-		scope.Log("Command can only run on the server")
+		scope.Log("hunt: %v", err)
 		return vfilter.Null{}
 	}
 
@@ -155,7 +159,7 @@ func (self *ScheduleHuntFunction) Call(ctx context.Context,
 		config_obj, vql_subsystem.GetPrincipal(scope))
 	hunt_id, err := flows.CreateHunt(ctx, config_obj, acl_manager, hunt_request)
 	if err != nil {
-		scope.Log("hunt: %s", err.Error())
+		scope.Log("hunt: %v", err)
 		return vfilter.Null{}
 	}
 
@@ -186,14 +190,14 @@ func (self *AddToHuntFunction) Call(ctx context.Context,
 
 	err := vql_subsystem.CheckAccess(scope, acls.COLLECT_CLIENT)
 	if err != nil {
-		scope.Log("hunt_add: %s", err)
+		scope.Log("hunt_add: %v", err)
 		return vfilter.Null{}
 	}
 
 	arg := &AddToHuntFunctionArg{}
 	err = arg_parser.ExtractArgsWithContext(ctx, scope, args, arg)
 	if err != nil {
-		scope.Log("hunt_add: %s", err.Error())
+		scope.Log("hunt_add: %v", err)
 		return vfilter.Null{}
 	}
 
@@ -231,7 +235,7 @@ func (self *AddToHuntFunction) Call(ctx context.Context,
 	}
 
 	if err != nil {
-		scope.Log("hunt_add: %s", err.Error())
+		scope.Log("hunt_add: %v", err)
 		return vfilter.Null{}
 	}
 

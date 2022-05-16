@@ -19,6 +19,9 @@ import VeloAce from '../core/ace.js';
 import { SettingsButton } from '../core/ace.js';
 import VeloTimestamp from "../utils/time.js";
 import EventTimelineViewer from "./timeline-viewer.js";
+import EventNotebook from "./event-notebook.js";
+import { get_notebook_id} from "./event-notebook.js";
+import DeleteNotebookDialog from '../notebooks/notebook-delete.js';
 
 import { withRouter }  from "react-router-dom";
 
@@ -28,6 +31,7 @@ import api from '../core/api-service.js';
 const mode_raw_data = "Raw Data";
 const mode_logs = "Logs";
 const mode_report = "Report";
+const mode_notebook = "Notebook";
 
 
 class InspectRawJson extends React.PureComponent {
@@ -58,8 +62,12 @@ class InspectRawJson extends React.PureComponent {
         this.source.cancel();
         this.source = axios.CancelToken.source();
 
-        let client_id = this.props.client && this.props.client.client_id;
-        if (!client_id || client_id === "server") {
+        // The same file is used by both server and client event
+        // tables - only difference is that the server's client id is
+        // "server".
+        let client_id = (this.props.client &&
+                         this.props.client.client_id) || "server";
+        if (client_id === "server") {
             api.get("v1/GetServerMonitoringState", {},
                     this.source.token).then(resp => {
                         if (resp.cancel) return;
@@ -93,7 +101,8 @@ class InspectRawJson extends React.PureComponent {
     };
 
     render() {
-        let client_id = this.props.client && this.props.client.client_id;
+        let client_id = (this.props.client &&
+                         this.props.client.client_id) || "server";
         return (
             <>
               <Modal show={true}
@@ -104,7 +113,7 @@ class InspectRawJson extends React.PureComponent {
                      onHide={this.props.onClose}>
                 <Modal.Header closeButton>
                   <Modal.Title>
-                    Raw { client_id && client_id !== "server" ? "Client " : "Server "}
+                    Raw { client_id !== "server" ? "Client " : "Server "}
                     Monitoring Table JSON
                   </Modal.Title>
                 </Modal.Header>
@@ -156,8 +165,10 @@ class EventMonitoring extends React.Component {
     }
 
     componentDidUpdate = (prevProps, prevState, rootNode) => {
-        let client_id = this.props.client && this.props.client.client_id;
-        let prev_client_id = prevProps.client && prevProps.client.client_id;
+        let client_id = (this.props.client &&
+                         this.props.client.client_id) || "server";
+        let prev_client_id = (prevProps.client &&
+                              prevProps.client.client_id) || "server";
         if (client_id !== prev_client_id) {
             this.fetchEventResults();
         }
@@ -172,6 +183,8 @@ class EventMonitoring extends React.Component {
 
         showDateSelector: false,
         showEventTableWizard: false,
+        showExportNotebook: false,
+        showDeleteNotebook: false,
 
         // Refreshed from the server
         event_monitoring_table: {},
@@ -183,6 +196,17 @@ class EventMonitoring extends React.Component {
         // A callback for child components to add toolbar buttons in
         // this component.
         buttonsRenderer: ()=>{},
+
+
+        start_time: 0,
+        end_time: 0,
+    }
+
+    setTimeRange = (start_time, end_time) => {
+        console.log(start_time);
+        this.setState({
+            start_time: start_time, end_time: end_time
+        });
     }
 
     fetchEventResults = () => {
@@ -212,14 +236,10 @@ class EventMonitoring extends React.Component {
         });
     }
 
-    setDay = (date) => {
-        this.setState({current_time: date});
-    }
-
     setArtifact = (artifact) => {
         this.setState({artifact: artifact});
-        let client_id = this.props.client && this.props.client.client_id;
-        client_id = client_id || "server";
+        let client_id = (this.props.client &&
+                         this.props.client.client_id) || "server";
         this.props.history.push('/events/' + client_id + '/' + artifact.artifact);
     }
 
@@ -253,7 +273,8 @@ class EventMonitoring extends React.Component {
         let column_types = this.state.artifact && this.state.artifact.definition &&
             this.state.artifact.definition.column_types;
 
-        let client_id = this.props.client && this.props.client.client_id;
+        let client_id = (this.props.client &&
+                         this.props.client.client_id) || "server";
         return (
             <>
               {this.state.showEventMonitoringPopup &&
@@ -328,6 +349,13 @@ class EventMonitoring extends React.Component {
                 </ButtonGroup>
 
                 <ButtonGroup className="float-right">
+                  { this.state.mode === mode_notebook &&
+                    <Button title="Delete Notebook"
+                            onClick={() => this.setState({showDeleteNotebook: true})}
+                            variant="default">
+                      <FontAwesomeIcon icon="trash"/>
+                    </Button>
+                  }
                   <Dropdown title="mode" variant="default">
                     <Dropdown.Toggle variant="default">
                       <FontAwesomeIcon icon="book"/>
@@ -352,6 +380,12 @@ class EventMonitoring extends React.Component {
                         onClick={() => this.setState({mode: mode_report})}>
                         {mode_report}
                       </Dropdown.Item>
+                      <Dropdown.Item
+                        title={mode_notebook}
+                        active={this.state.mode === mode_notebook}
+                        onClick={() => this.setState({mode: mode_notebook})}>
+                        {mode_notebook}
+                      </Dropdown.Item>
                     </Dropdown.Menu>
                   </Dropdown>
                 </ButtonGroup>
@@ -361,11 +395,12 @@ class EventMonitoring extends React.Component {
                 <Container className="event-report-viewer">
                 <EventTimelineViewer
                   toolbar={x=>this.setState({buttonsRenderer: x})}
-                  client_id={this.props.client.client_id}
+                  client_id={client_id}
                   artifact={this.state.artifact.artifact}
                   mode={this.state.mode}
                   renderers={renderers}
                   column_types={column_types}
+                  time_range_setter={this.setTimeRange}
                  />
                 </Container> }
 
@@ -381,6 +416,27 @@ class EventMonitoring extends React.Component {
                 }
               </Container>
             }
+
+            { this.state.mode === mode_notebook &&
+              <Container className="event-report-viewer">
+                { this.state.artifact.artifact ?
+                  <EventNotebook
+                    artifact={this.state.artifact.artifact}
+                    client_id={client_id}
+                    start_time={this.state.start_time}
+                  /> :
+                  <div className="no-content">Please select an artifact to view above.</div>
+                }
+              </Container>
+            }
+              { this.state.showDeleteNotebook &&
+                <DeleteNotebookDialog
+                  notebook_id={get_notebook_id(
+                      this.state.artifact.artifact, client_id)}
+                  onClose={e=>{
+                      this.setState({showDeleteNotebook: false});
+                  }}/>
+              }
             </>
         );
     }

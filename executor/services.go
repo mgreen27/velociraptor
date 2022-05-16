@@ -2,10 +2,10 @@ package executor
 
 import (
 	"context"
-	"errors"
 	"sync"
 
 	"www.velocidex.com/golang/velociraptor/actions"
+	"www.velocidex.com/golang/velociraptor/config"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/constants"
 	crypto_proto "www.velocidex.com/golang/velociraptor/crypto/proto"
@@ -27,16 +27,11 @@ func StartServices(
 	}
 
 	// Now start client specific services.
-	err = sm.Start(func(ctx context.Context,
+	return sm.Start(func(ctx context.Context,
 		wg *sync.WaitGroup,
 		config_obj *config_proto.Config) error {
 		return StartEventTableService(ctx, wg, config_obj, exe)
 	})
-	if err != nil {
-		return err
-	}
-
-	return sm.Start(StartNannyService)
 }
 
 func StartEventTableService(
@@ -44,9 +39,6 @@ func StartEventTableService(
 	wg *sync.WaitGroup,
 	config_obj *config_proto.Config,
 	exe *ClientExecutor) error {
-	if config_obj.Writeback == nil {
-		return errors.New("Client writeback not configured")
-	}
 
 	logger := logging.GetLogger(config_obj, &logging.ClientComponent)
 	logger.Info("<green>Starting</> event query service with version %v.",
@@ -59,9 +51,10 @@ func StartEventTableService(
 
 	actions.InitializeEventTable(ctx, wg)
 
-	if config_obj.Writeback.EventQueries != nil {
+	writeback, _ := config.GetWriteback(config_obj.Client)
+	if writeback != nil && writeback.EventQueries != nil {
 		actions.UpdateEventTable{}.Run(config_obj, ctx,
-			responder, config_obj.Writeback.EventQueries)
+			responder, writeback.EventQueries)
 	}
 
 	logger.Info("<green>Starting</> event query service with version %v.",

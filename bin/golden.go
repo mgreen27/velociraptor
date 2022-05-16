@@ -34,19 +34,20 @@ import (
 	"github.com/Velocidex/yaml/v2"
 	errors "github.com/pkg/errors"
 	"github.com/sergi/go-diff/diffmatchpatch"
-	"github.com/shirou/gopsutil/process"
-	kingpin "gopkg.in/alecthomas/kingpin.v2"
+	"github.com/shirou/gopsutil/v3/process"
+	"www.velocidex.com/golang/velociraptor/actions"
 	actions_proto "www.velocidex.com/golang/velociraptor/actions/proto"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/constants"
 	logging "www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/reporting"
 	"www.velocidex.com/golang/velociraptor/services"
+	"www.velocidex.com/golang/velociraptor/services/client_info"
 	"www.velocidex.com/golang/velociraptor/services/hunt_dispatcher"
 	"www.velocidex.com/golang/velociraptor/services/indexing"
 	"www.velocidex.com/golang/velociraptor/startup"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
-	"www.velocidex.com/golang/velociraptor/vql/tools"
+	"www.velocidex.com/golang/velociraptor/vql/remapping"
 	vfilter "www.velocidex.com/golang/vfilter"
 )
 
@@ -65,6 +66,11 @@ var (
 
 	testonly      = golden_command.Flag("testonly", "Do not update the fixture.").Bool()
 	disable_alarm = golden_command.Flag("disable_alarm", "Do not terminate when deadlocked.").Bool()
+
+	golden_update_datastore = golden_command.Flag("update_datastore",
+		"Normally golden tests run with the readonly datastore so as not to "+
+			"change the fixture. This flag allows updates to the fixtures.").
+		Bool()
 )
 
 type testFixture struct {
@@ -127,6 +133,12 @@ func makeCtxWithTimeout(duration int) (context.Context, func()) {
 					_ = p.WriteTo(os.Stdout, 1)
 				}
 
+				// Write the recent queries.
+				fmt.Println("Recent Queries.")
+				for _, q := range actions.QueryLog.Get() {
+					fmt.Println(q)
+				}
+
 				os.Stdout.Close()
 
 				// Hard exit with an error.
@@ -156,9 +168,11 @@ func runTest(fixture *testFixture, sm *services.Service,
 	}
 	defer os.Remove(tmpfile.Name())
 
-	container, err := reporting.NewContainer(tmpfile.Name(), "", 5)
-	kingpin.FatalIfError(err, "Can not create output container")
-
+	container, err := reporting.NewContainer(
+		config_obj, tmpfile.Name(), "", 5)
+	if err != nil {
+		return "", fmt.Errorf("Can not create output container: %w", err)
+	}
 	log_writer.Clear()
 
 	builder := services.ScopeBuilder{
@@ -168,7 +182,7 @@ func runTest(fixture *testFixture, sm *services.Service,
 		Uploader:   container,
 		Env: ordereddict.NewDict().
 			Set("GoldenOutput", tmpfile.Name()).
-			Set(constants.SCOPE_MOCK, &tools.MockingScopeContext{}),
+			Set(constants.SCOPE_MOCK, &remapping.MockingScopeContext{}),
 	}
 
 	if golden_env_map != nil {
@@ -184,7 +198,9 @@ func runTest(fixture *testFixture, sm *services.Service,
 
 	// Cleanup after the query.
 	manager, err := services.GetRepositoryManager()
-	kingpin.FatalIfError(err, "GetRepositoryManager")
+	if err != nil {
+		return "", err
+	}
 	scope := manager.BuildScopeFromScratch(builder)
 	defer scope.Close()
 
@@ -192,7 +208,9 @@ func runTest(fixture *testFixture, sm *services.Service,
 		container.Close()
 		os.Remove(tmpfile.Name()) // clean up
 	})
-	kingpin.FatalIfError(err, "AddDestructor")
+	if err != nil {
+		return "", err
+	}
 
 	result := ""
 	for _, query := range fixture.Queries {
@@ -228,7 +246,7 @@ func runTest(fixture *testFixture, sm *services.Service,
 	return result, nil
 }
 
-func doGolden() {
+func doGolden() error {
 	vql_subsystem.RegisterPlugin(&MemoryLogPlugin{})
 
 	if !*disable_alarm {
@@ -237,7 +255,15 @@ func doGolden() {
 	}
 
 	config_obj, err := makeDefaultConfigLoader().LoadAndValidate()
-	kingpin.FatalIfError(err, "Can not load configuration.")
+	if err != nil {
+		return err
+	}
+
+	// Do not update the datastore - this allows golden tests to avoid
+	// modifying the fixtures.
+	if !*golden_update_datastore {
+		config_obj.Datastore.Implementation = "ReadOnlyDataStore"
+	}
 
 	logger := logging.GetLogger(config_obj, &logging.ToolComponent)
 	logger.Info("Starting golden file test.")
@@ -249,18 +275,31 @@ func doGolden() {
 	startup.Reset()
 
 	sm, err := startEssentialServices(config_obj)
-	kingpin.FatalIfError(err, "Startup")
+	if err != nil {
+		return err
+	}
 	defer sm.Close()
 
 	// Start specific services needed for golden files
 	err = sm.Start(hunt_dispatcher.StartHuntDispatcher)
-	kingpin.FatalIfError(err, "Starting services")
+	if err != nil {
+		return err
+	}
+
+	err = sm.Start(client_info.StartClientInfoService)
+	if err != nil {
+		return err
+	}
 
 	err = sm.Start(indexing.StartIndexingService)
-	kingpin.FatalIfError(err, "Starting services")
+	if err != nil {
+		return err
+	}
 
 	_, err = getRepository(config_obj)
-	kingpin.FatalIfError(err, "Loading extra artifacts")
+	if err != nil {
+		return fmt.Errorf("Loading extra artifacts: %w", err)
+	}
 
 	err = filepath.Walk(*golden_command_directory, func(file_path string, info os.FileInfo, err error) error {
 		if *golden_command_filter != "" &&
@@ -276,14 +315,20 @@ func doGolden() {
 
 		logger.Printf("Opening %v", file_path)
 		data, err := ioutil.ReadFile(file_path)
-		kingpin.FatalIfError(err, "Reading file")
+		if err != nil {
+			return fmt.Errorf("Reading file: %w", err)
+		}
 
 		fixture := testFixture{}
 		err = yaml.Unmarshal(data, &fixture)
-		kingpin.FatalIfError(err, "Unmarshal input file")
+		if err != nil {
+			return fmt.Errorf("Unmarshal input file: %w", err)
+		}
 
 		result, err := runTest(&fixture, sm, config_obj)
-		kingpin.FatalIfError(err, "Running test")
+		if err != nil {
+			return fmt.Errorf("Running test %v: %w", fixture, err)
+		}
 
 		outfile := strings.Replace(file_path, ".in.", ".out.", -1)
 		old_data, err := ioutil.ReadFile(outfile)
@@ -308,27 +353,30 @@ func doGolden() {
 			err = ioutil.WriteFile(
 				outfile,
 				[]byte(result), 0666)
-			kingpin.FatalIfError(err, "Unable to write golden file")
+			if err != nil {
+				return fmt.Errorf("Unable to write golden file: %w", err)
+			}
 		}
 		return nil
 	})
 
 	if err != nil {
-		kingpin.Fatalf("golden error: %s", err)
+		return fmt.Errorf("golden error: %w", err)
 	}
 
 	if len(failures) > 0 {
-		kingpin.Fatalf(
-			"Failed! Some golden files did not match:%s\n",
-			failures)
+		return fmt.Errorf(
+			"Failed! Some golden files did not match: %s\n", failures)
 	}
+	return nil
 }
 
 func init() {
 	command_handlers = append(command_handlers, func(command string) bool {
 		switch command {
-		case "golden":
-			doGolden()
+		case golden_command.FullCommand():
+			FatalIfError(golden_command, doGolden)
+
 		default:
 			return false
 		}

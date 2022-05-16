@@ -1,13 +1,10 @@
-// +build !windows
-
-// This is the non windows version. We only support go style
-// expansions (i.e. $Temp - on non windows systems we do not support
-// windows style expands (e.g. %TEMP%)
 package functions
 
 import (
 	"context"
 	"os"
+	"regexp"
+	"strings"
 
 	"github.com/Velocidex/ordereddict"
 	"www.velocidex.com/golang/velociraptor/acls"
@@ -16,13 +13,17 @@ import (
 	"www.velocidex.com/golang/vfilter/arg_parser"
 )
 
-type _ExpandPathArgs struct {
+var (
+	expand_regex = regexp.MustCompile("%([a-zA-Z_0-9]+)%")
+)
+
+type ExpandPathArgs struct {
 	Path string `vfilter:"required,field=path,doc=A path with environment escapes"`
 }
 
-type _ExpandPath struct{}
+type ExpandPath struct{}
 
-func (self _ExpandPath) Call(
+func (self ExpandPath) Call(
 	ctx context.Context,
 	scope vfilter.Scope,
 	args *ordereddict.Dict) vfilter.Any {
@@ -33,32 +34,38 @@ func (self _ExpandPath) Call(
 		return vfilter.Null{}
 	}
 
-	arg := &_ExpandPathArgs{}
+	arg := &ExpandPathArgs{}
 	err = arg_parser.ExtractArgsWithContext(ctx, scope, args, arg)
 	if err != nil {
 		scope.Log("expand: %s", err.Error())
 		return vfilter.Null{}
 	}
 
-	return os.Expand(arg.Path, getenv)
+	// Support windows style expansion on all platforms.
+	return expand_env(arg.Path)
+}
+
+func expand_env(v string) string {
+	return os.Expand(expand_regex.ReplaceAllString(v, "$${$1}"), getenv)
 }
 
 func getenv(v string) string {
 	// Allow $ to be escaped (#850) by doubling up $
-	if v == "$" {
+	switch strings.ToLower(v) {
+	case "$":
 		return "$"
 	}
 	return os.Getenv(v)
 }
 
-func (self _ExpandPath) Info(scope vfilter.Scope, type_map *vfilter.TypeMap) *vfilter.FunctionInfo {
+func (self ExpandPath) Info(scope vfilter.Scope, type_map *vfilter.TypeMap) *vfilter.FunctionInfo {
 	return &vfilter.FunctionInfo{
 		Name:    "expand",
 		Doc:     "Expand the path using the environment.",
-		ArgType: type_map.AddType(scope, &_ExpandPathArgs{}),
+		ArgType: type_map.AddType(scope, &ExpandPathArgs{}),
 	}
 }
 
 func init() {
-	vql_subsystem.RegisterFunction(&_ExpandPath{})
+	vql_subsystem.RegisterFunction(&ExpandPath{})
 }

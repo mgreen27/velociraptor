@@ -27,6 +27,9 @@ darwin_intel:
 darwin_m1:
 	go run make.go -v DarwinM1
 
+linux_m1:
+	go run make.go -v LinuxM1
+
 linux:
 	go run make.go -v linux
 
@@ -55,14 +58,6 @@ generate:
 check:
 	staticcheck ./...
 
-build_docker:
-	echo Building the initial docker container.
-	docker build --tag velo_builder docker
-
-build_release: build_docker
-	echo Building release into output directory.
-	docker run --rm -v `pwd`:/build/ -u `id -u`:`id -g` -e HOME=/tmp/  velo_builder
-
 debug:
 	dlv debug --wd=. --build-flags="-tags 'server_vql extras'" ./bin/ -- frontend --disable-panic-guard -v --debug
 
@@ -70,10 +65,28 @@ debug_client:
 	dlv debug --build-flags="-tags 'server_vql extras'" ./bin/ -- client -v
 
 debug_golden:
-	dlv debug --build-flags="-tags 'server_vql extras'" ./bin/ -- --config artifacts/testdata/windows/test.config.yaml golden artifacts/testdata/server/testcases/ --env srcDir=`pwd` --disable_alarm --filter=${GOLDEN}
+	dlv debug --build-flags="-tags 'server_vql extras'" ./bin/ -- --config artifacts/testdata/windows/test.config.yaml golden artifacts/testdata/server/testcases/ --env srcDir=`pwd` --disable_alarm -v --filter=${GOLDEN}
 
 lint:
 	golangci-lint run
 
 KapeFilesSync:
-	python3 scripts/kape_files.py ~/projects/KapeFiles/ > artifacts/definitions/Windows/KapeFiles/Targets.yaml
+	python3 scripts/kape_files.py -t win ~/projects/KapeFiles/ > artifacts/definitions/Windows/KapeFiles/Targets.yaml
+	python3 scripts/kape_files.py -t nix ~/projects/KapeFiles/ > artifacts/definitions/Linux/KapeFiles/CollectFromDirectory.yaml
+
+SQLECmdSync:
+	python3 scripts/sqlecmd_convert.py ~/projects/SQLECmd/ ~/projects/KapeFiles/ artifacts/definitions/Generic/Collectors/SQLECmd.yaml
+
+# Do this after fetching the build artifacts with `gh run download <RunID>`
+UpdateCIArtifacts:
+	mv artifact/server/* artifacts/testdata/server/testcases/
+	mv artifact/windows/* artifacts/testdata/windows/
+
+UpdateCerts:
+	cp /etc/ssl/certs/ca-certificates.crt crypto/ca-certificates.crt
+	fileb0x crypto/b0x.yaml
+
+# Use this to propare artifact packs at specific versions:
+# First git checkout origin/v0.6.3
+archive_artifacts:
+	zip -r release_artifacts_$(basename "$(git status | head -1)").zip artifacts/definitions/ -i \*.yaml

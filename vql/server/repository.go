@@ -32,10 +32,6 @@ func (self *ArtifactSetFunction) Call(ctx context.Context,
 		return vfilter.Null{}
 	}
 
-	if arg.Prefix == "" {
-		arg.Prefix = "Packs."
-	}
-
 	config_obj, ok := vql_subsystem.GetServerConfig(scope)
 	if !ok {
 		scope.Log("artifact_set: Command can only run on the server")
@@ -49,9 +45,14 @@ func (self *ArtifactSetFunction) Call(ctx context.Context,
 	}
 
 	tmp_repository := manager.NewRepository()
-	definition, err := tmp_repository.LoadYaml(arg.Definition, true /* validate */)
+	definition, err := tmp_repository.LoadYaml(
+		arg.Definition, true /* validate */, false /* built_in */)
 	if err != nil {
-		scope.Log("artifact_set: %v", err)
+		definition := arg.Definition
+		if len(arg.Definition) > 100 {
+			definition = arg.Definition[:99] + " ..."
+		}
+		scope.Log("artifact_set: %v: %v", err, definition)
 		return vfilter.Null{}
 	}
 
@@ -66,7 +67,7 @@ func (self *ArtifactSetFunction) Call(ctx context.Context,
 	case "server", "server_event":
 		permission = acls.SERVER_ARTIFACT_WRITER
 	default:
-		scope.Log("artifact_set: artifact type invalid")
+		scope.Log("artifact_set: artifact type %v invalid", definition.Type)
 		return vfilter.Null{}
 	}
 
@@ -138,9 +139,7 @@ func (self *ArtifactDeleteFunction) Call(ctx context.Context,
 		return vfilter.Null{}
 	}
 
-	// Same criteria as
-	// https://github.com/Velocidex/velociraptor/blob/3eddb529a0059a05c0a6c2c7057446f36c4e9a6a/gui/static/angular-components/artifact/artifact-viewer-directive.js#L62
-	if !strings.HasPrefix(definition.Name, "Custom.") {
+	if definition.BuiltIn {
 		scope.Log("artifact_delete: Can only delete custom artifacts.")
 		return vfilter.Null{}
 	}
@@ -228,7 +227,17 @@ func (self ArtifactsPlugin) Call(
 
 		// No args means just dump all artifacts
 		if len(arg.Names) == 0 {
-			arg.Names = repository.List()
+			for _, name := range repository.List() {
+				artifact, pres := repository.Get(config_obj, name)
+				if pres {
+					select {
+					case <-ctx.Done():
+						return
+					case output_chan <- json.ConvertProtoToOrderedDict(artifact):
+					}
+				}
+			}
+			return
 		}
 
 		seen := make(map[string]*artifacts_proto.Artifact)

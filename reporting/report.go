@@ -11,6 +11,7 @@ import (
 	"www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/paths"
 	"www.velocidex.com/golang/velociraptor/services"
+	"www.velocidex.com/golang/velociraptor/uploads"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
 	"www.velocidex.com/golang/vfilter"
 )
@@ -321,6 +322,7 @@ func newBaseTemplateEngine(
 	config_obj *config_proto.Config,
 	scope vfilter.Scope,
 	acl_manager vql_subsystem.ACLManager,
+	uploader uploads.Uploader,
 	repository services.Repository,
 	artifact_name string) (
 	*BaseTemplateEngine, error) {
@@ -344,6 +346,7 @@ func newBaseTemplateEngine(
 		scope = manager.BuildScope(
 			services.ScopeBuilder{
 				Config:     config_obj,
+				Uploader:   uploader,
 				ACLManager: acl_manager,
 			})
 	}

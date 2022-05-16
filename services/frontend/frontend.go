@@ -15,14 +15,24 @@ import (
 
 	"github.com/Velocidex/ordereddict"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"google.golang.org/protobuf/proto"
 	api_proto "www.velocidex.com/golang/velociraptor/api/proto"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
+	"www.velocidex.com/golang/velociraptor/datastore"
+	"www.velocidex.com/golang/velociraptor/file_store"
 	"www.velocidex.com/golang/velociraptor/grpc_client"
 	"www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/services"
 	"www.velocidex.com/golang/velociraptor/services/journal"
 	"www.velocidex.com/golang/velociraptor/utils"
+)
+
+var (
+	currentReplicationConnections = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "minion_replication_grpc_connections",
+		Help: "Current number of connections to the master.",
+	})
 )
 
 func PushMetrics(ctx context.Context, wg *sync.WaitGroup,
@@ -178,6 +188,21 @@ func (self *MasterFrontendManager) processMetrics(ctx context.Context,
 	return nil
 }
 
+func (self *MasterFrontendManager) GetMinionCount() int {
+	res := 0
+	self.mu.Lock()
+	defer self.mu.Unlock()
+
+	for node_name, metric := range self.stats {
+		if node_name != "master" {
+			if time.Now().Sub(metric.Timestamp) < 60*time.Second {
+				res++
+			}
+		}
+	}
+	return res
+}
+
 // Every 10 seconds read the cummulative stats and update the
 // Server.Monitor.Health artifact.
 func (self *MasterFrontendManager) UpdateStats(ctx context.Context) {
@@ -231,17 +256,13 @@ func (self *MasterFrontendManager) UpdateStats(ctx context.Context) {
 	}
 }
 
-func (self MasterFrontendManager) IsMaster() bool {
-	return true
-}
-
 // The master does not replicate anywhere.
-func (self MasterFrontendManager) GetMasterAPIClient(ctx context.Context) (
+func (self *MasterFrontendManager) GetMasterAPIClient(ctx context.Context) (
 	api_proto.APIClient, func() error, error) {
 	return nil, nil, services.FrontendIsMaster
 }
 
-func (self MasterFrontendManager) Start(ctx context.Context, wg *sync.WaitGroup,
+func (self *MasterFrontendManager) Start(ctx context.Context, wg *sync.WaitGroup,
 	config_obj *config_proto.Config) error {
 
 	// If no service specification is set, we start all services
@@ -264,22 +285,43 @@ func (self MasterFrontendManager) Start(ctx context.Context, wg *sync.WaitGroup,
 			ApiServer:         true,
 			FrontendServer:    true,
 			GuiServer:         true,
+			IndexServer:       true,
 		}
 	}
 
 	logger := logging.GetLogger(self.config_obj, &logging.FrontendComponent)
 	logger.Info("<green>Frontend:</> Server will be master.")
 
+	if config_obj.Datastore == nil {
+		return errors.New("Datastore must be specified")
+	}
+
+	implementation := config_obj.Datastore.MasterImplementation
+	if implementation == "" {
+		implementation = config_obj.Datastore.Implementation
+	}
+	logger.Info("<green>Filestore implementation</> %v.", implementation)
+	err := file_store.SetGlobalFilestore(implementation, config_obj)
+	if err != nil {
+		return err
+	}
+
+	err = datastore.SetGlobalDatastore(implementation, config_obj)
+	if err != nil {
+		return err
+	}
+
 	// Push our metrics to the master node.
-	err := PushMetrics(ctx, wg, config_obj, "master")
+	err = PushMetrics(ctx, wg, config_obj, "master")
 	if err != nil {
 		return err
 	}
 
 	go self.UpdateStats(ctx)
-	go utils.Retry(func() error {
+	go utils.Retry(ctx, func() error {
 		return journal.WatchQueueWithCB(ctx, config_obj, wg,
 			"Server.Internal.FrontendMetrics",
+			"FrontendService",
 			self.processMetrics)
 	}, 10, time.Second)
 
@@ -291,6 +333,10 @@ type MinionFrontendManager struct {
 	name       string
 }
 
+func (self MinionFrontendManager) GetMinionCount() int {
+	return 0
+}
+
 func (self MinionFrontendManager) IsMaster() bool {
 	return false
 }
@@ -298,7 +344,17 @@ func (self MinionFrontendManager) IsMaster() bool {
 // The minion frontend replicates to the master node.
 func (self MinionFrontendManager) GetMasterAPIClient(ctx context.Context) (
 	api_proto.APIClient, func() error, error) {
-	return grpc_client.Factory.GetAPIClient(ctx, self.config_obj)
+	client, closer, err := grpc_client.Factory.GetAPIClient(ctx, self.config_obj)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	currentReplicationConnections.Inc()
+
+	return client, func() error {
+		defer currentReplicationConnections.Dec()
+		return closer()
+	}, err
 }
 
 func (self *MinionFrontendManager) Start(ctx context.Context, wg *sync.WaitGroup,
@@ -308,19 +364,36 @@ func (self *MinionFrontendManager) Start(ctx context.Context, wg *sync.WaitGroup
 	// services on minion frontends.
 	if config_obj.Frontend.ServerServices == nil {
 		config_obj.Frontend.ServerServices = &config_proto.ServerServicesConfig{
-			HuntDispatcher:   true,
-			StatsCollector:   true,
-			ClientMonitoring: true,
-			SanityChecker:    true,
-			FrontendServer:   true,
+			HuntDispatcher:    true,
+			StatsCollector:    true,
+			ClientMonitoring:  true,
+			SanityChecker:     true,
+			FrontendServer:    true,
+			MonitoringService: true,
+			DynDns:            true,
 		}
 	}
 
-	self.name = fmt.Sprintf("%s:%d", config_obj.Frontend.Hostname,
-		config_obj.Frontend.BindPort)
+	self.name = services.GetNodeName(config_obj.Frontend)
 
 	logger := logging.GetLogger(self.config_obj, &logging.FrontendComponent)
 	logger.Info("<green>Frontend:</> Server will be a minion, with ID %v.", self.name)
+
+	implementation := config_obj.Datastore.MinionImplementation
+	if implementation == "" {
+		implementation = config_obj.Datastore.Implementation
+	}
+
+	logger.Info("<green>Filestore implementation</> %v.", implementation)
+	err := file_store.SetGlobalFilestore(implementation, config_obj)
+	if err != nil {
+		return err
+	}
+
+	err = datastore.SetGlobalDatastore(implementation, config_obj)
+	if err != nil {
+		return err
+	}
 
 	// Push our metrics to the master node.
 	return PushMetrics(ctx, wg, config_obj, self.name)
@@ -335,7 +408,7 @@ func StartFrontendService(ctx context.Context, wg *sync.WaitGroup,
 		return errors.New("Frontend not configured")
 	}
 
-	if config_obj.Frontend.IsMaster {
+	if services.IsMaster(config_obj) {
 		manager := &MasterFrontendManager{
 			config_obj: config_obj,
 			stats:      make(map[string]*FrontendMetrics),
@@ -352,10 +425,19 @@ func StartFrontendService(ctx context.Context, wg *sync.WaitGroup,
 // Selects the node by name from the extra frontends configuration
 func SelectFrontend(node string, config_obj *config_proto.Config) error {
 	for _, fe := range config_obj.ExtraFrontends {
-		fe_name := fmt.Sprintf("%v:%v", fe.Hostname, fe.BindPort)
+		fe_name := services.GetNodeName(fe)
 		if fe_name == node {
 			proto.Merge(config_obj.Frontend, fe)
 			return nil
+		}
+	}
+
+	logger := logging.GetLogger(config_obj, &logging.FrontendComponent)
+	logger.Error("Frontend %v not found!", node)
+	if len(config_obj.ExtraFrontends) > 0 {
+		for _, fe := range config_obj.ExtraFrontends {
+			fe_name := fmt.Sprintf("%v:%v", fe.Hostname, fe.BindPort)
+			logger.Error("Available Frontend %v", fe_name)
 		}
 	}
 

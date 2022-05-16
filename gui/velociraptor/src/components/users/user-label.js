@@ -45,7 +45,9 @@ class UserSettings extends React.PureComponent {
 
     render() {
         return (
-            <Modal show={true} onHide={this.props.onClose}>
+            <Modal show={true}
+                   dialogClassName="modal-90w"
+                   onHide={this.props.onClose}>
               <Modal.Header closeButton>
                 <Modal.Title>User Settings</Modal.Title>
               </Modal.Header>
@@ -138,7 +140,7 @@ export default class UserLabel extends React.Component {
                   setSetting={this.setSettings}
                   onClose={()=>this.setState({showUserSettings: false})} /> }
               <ButtonGroup className="user-label">
-                <Button href={api.base_path + "/logoff?username="+
+                <Button href={api.base_path + "/app/logoff.html?username="+
                               this.context.traits.username } >
                   <FontAwesomeIcon icon="sign-out-alt" />
                 </Button>

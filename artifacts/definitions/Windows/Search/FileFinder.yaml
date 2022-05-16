@@ -48,8 +48,15 @@ parameters:
   - name: Accessor
     default: auto
     description: The accessor to use
+    type: choices
+    choices:
+      - auto
+      - registry
+      - file
+      - ntfs
 
   - name: YaraRule
+    type: yara
     default:
     description: A yara rule to search for matching files.
 
@@ -73,12 +80,13 @@ parameters:
 sources:
   - query: |
       LET file_search = SELECT FullPath,
-               get(item=Sys, field="mft") as Inode,
+               get(item=Data, field="mft") as Inode,
                Mode.String AS Mode, Size,
                Mtime AS MTime,
                Atime AS ATime,
                Btime AS BTime,
-               Ctime AS CTime, "" AS Keywords, IsDir
+               Ctime AS CTime, "" AS Keywords,
+               IsDir, Data
         FROM glob(globs=SearchFilesGlobTable.Glob + SearchFilesGlob,
                   accessor=Accessor)
 
@@ -86,14 +94,15 @@ sources:
         condition=MoreRecentThan,
         then={
           SELECT * FROM file_search
-          WHERE Modified > parse_float(string=MoreRecentThan)
+          WHERE MTime > MoreRecentThan
         }, else=file_search)
 
       LET modified_before = SELECT * FROM if(
         condition=ModifiedBefore,
         then={
           SELECT * FROM more_recent
-          WHERE Modified < parse_float(string=ModifiedBefore)
+          WHERE MTime < ModifiedBefore
+           AND  MTime > MoreRecentThan
         }, else=more_recent)
 
       LET keyword_search = SELECT * FROM if(
@@ -107,7 +116,7 @@ sources:
             query={
                SELECT FullPath, Inode, Mode,
                       Size, MTime, ATime, CTime, BTime,
-                      str(str=String.Data) As Keywords, IsDir
+                      str(str=String.Data) As Keywords, IsDir, Data
 
                FROM yara(files=FullPath,
                          key="A",
@@ -121,7 +130,8 @@ sources:
                if(condition=Upload_File and NOT IsDir,
                   then=upload(file=FullPath, accessor=Accessor)) AS Upload,
                if(condition=Calculate_Hash and NOT IsDir,
-                  then=hash(path=FullPath, accessor=Accessor)) AS Hash
+                  then=hash(path=FullPath, accessor=Accessor)) AS Hash,
+            Data
       FROM keyword_search
 
 column_types:

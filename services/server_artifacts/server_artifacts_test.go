@@ -43,7 +43,7 @@ func (self *ServerArtifactsTestSuite) LoadArtifacts(definition string) services.
 	manager, _ := services.GetRepositoryManager()
 	repository, _ := manager.GetGlobalRepository(self.ConfigObj)
 
-	_, err := repository.LoadYaml(definition, false)
+	_, err := repository.LoadYaml(definition, false, true)
 	assert.NoError(self.T(), err)
 
 	return repository
@@ -59,7 +59,7 @@ func (self *ServerArtifactsTestSuite) ScheduleAndWait(
 	complete_flow_id := ""
 
 	err := journal.WatchQueueWithCB(self.Sm.Ctx, self.ConfigObj, self.Sm.Wg,
-		"System.Flow.Completion", func(
+		"System.Flow.Completion", "ServerArtifactsTestSuite", func(
 			ctx context.Context,
 			ConfigObj *config_proto.Config,
 			row *ordereddict.Dict) error {
@@ -85,12 +85,12 @@ func (self *ServerArtifactsTestSuite) ScheduleAndWait(
 			Creator:   user,
 			ClientId:  "server",
 			Artifacts: []string{name},
+		}, func() {
+			// Notify it about the new job
+			notifier := services.GetNotifier()
+			err = notifier.NotifyListener(self.ConfigObj, "server", "")
+			assert.NoError(self.T(), err)
 		})
-	assert.NoError(self.T(), err)
-
-	// Notify it about the new job
-	notifier := services.GetNotifier()
-	err = notifier.NotifyListener(self.ConfigObj, "server")
 	assert.NoError(self.T(), err)
 
 	// Wait for the collection to complete
@@ -125,7 +125,7 @@ sources:
 
 	// How long we took to run - should be immediate
 	run_time := (details.Context.ActiveTime - details.Context.StartTime) / 1000000
-	assert.True(self.T(), run_time < 1)
+	assert.True(self.T(), run_time < 2)
 }
 
 // Collect a long lived artifact with specified timeout.

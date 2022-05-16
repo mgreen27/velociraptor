@@ -68,8 +68,8 @@ type SourcePluginArgs struct {
 	// allows post processing in multiple stages - one query
 	// reduces the data into a result set and subsequent queries
 	// operate on that reduced set.
-	NotebookId        string `vfilter:"optional,field=notebook_id,doc=The notebook to read from (shoud also include cell id)"`
-	NotebookCellId    string `vfilter:"optional,field=notebook_cell_id,doc=The notebook cell read from (shoud also include notebook id)"`
+	NotebookId        string `vfilter:"optional,field=notebook_id,doc=The notebook to read from (should also include cell id)"`
+	NotebookCellId    string `vfilter:"optional,field=notebook_cell_id,doc=The notebook cell read from (should also include notebook id)"`
 	NotebookCellTable int64  `vfilter:"optional,field=notebook_cell_table,doc=A notebook cell can have multiple tables.)"`
 
 	StartRow int64 `vfilter:"optional,field=start_row,doc=Start reading the result set from this row"`
@@ -298,12 +298,12 @@ func ParseSourceArgsFromScope(arg *SourcePluginArgs, scope vfilter.Scope) {
 
 	start_time, pres := scope.Resolve("StartTime")
 	if pres {
-		arg.StartTime, _ = start_time.(int64)
+		arg.StartTime = start_time
 	}
 
 	end_time, pres := scope.Resolve("EndTime")
 	if pres {
-		arg.EndTime, _ = end_time.(int64)
+		arg.EndTime = end_time
 	}
 
 	notebook_id, pres := scope.Resolve("NotebookId")

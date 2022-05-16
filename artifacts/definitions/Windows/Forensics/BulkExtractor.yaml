@@ -72,25 +72,28 @@ parameters:
     description: "Bulk_extractor custom commands. .e.g '-E evtx, -e zip -S unzip_carve_mode=2'"
 
 sources:
-  - queries:
-    - LET bin <= SELECT *
+  - query: |
+      LET bin <= SELECT *
         FROM Artifact.Generic.Utils.FetchBinary(ToolName="Bulk_Extractor")
-    - LET tempfolder <= tempdir()
-    - LET ExePath <= tempfile(extension=".exe")
-    - LET zip_file <= SELECT
-            copy(filename=url(path=bin[0].FullPath,
-                fragment="bulk_extractor.exe").String,
-                dest=ExePath,
-                accessor='zip') AS Payload
+      LET tempfolder <= tempdir()
+      LET ExePath <= tempfile(extension=".exe")
+      LET zip_file <= SELECT
+            copy(
+              filename=pathspec(
+                 DelegatePath=bin[0].FullPath,
+                 Path="bulk_extractor.exe"),
+              dest=ExePath,
+              accessor='zip') AS Payload
         FROM scope()
-    - LET target = SELECT
+
+      LET target = SELECT
             DeviceID,
             if(condition=DeviceID=~"^\\\\\\\\.\\\\",
                 then=split(string=split(string=DeviceID,sep='\\\\\\\\.\\\\')[1],
                     sep='\\\\')[0],
                 else="bulk_out") as base,
             _DeviceID
-        FROM chain(
+      FROM chain(
             a={
                 SELECT
                     DeviceID,
@@ -117,7 +120,9 @@ sources:
                 ORDER by FullPath
             })
             GROUP BY _DeviceID
-    - LET cmdline = SELECT (zip_file[0].Payload,'-q','99999999999','-R') + CMD + ('-o') as CMD FROM switch(
+
+      LET cmdline = SELECT (zip_file[0].Payload,'-q','99999999999','-R') +
+                           CMD + ('-o') as CMD FROM switch(
             a= {
                 SELECT split(string=FreeCommand, sep=' ') AS CMD
                 FROM scope()
@@ -142,7 +147,8 @@ sources:
             e= {
                 SELECT ('-h') AS CMD FROM scope()
             })
-    - SELECT * FROM foreach(
+
+      SELECT * FROM foreach(
         row=target,
         query= {
             SELECT *
@@ -150,9 +156,11 @@ sources:
                 , length=10000000, sep='\n')})
 
   - name: FindResults
-    queries:
-    - SELECT * FROM foreach(
-        row={SELECT * FROM glob(globs=tempfolder + '/*/find.txt')},
+    query: |
+      SELECT * FROM foreach(
+        row={  SELECT *
+               FROM glob(globs='/*/find.txt', root=tempfolder)
+        },
         query={
             SELECT *
             FROM split_records(filenames=FullPath,first_row_is_headers=false,
@@ -162,8 +170,8 @@ sources:
         WHERE FindRegex OR FreeCommand =~ '-f'
 
   - name: Upload
-    queries:
-    - SELECT
-         upload(file=FullPath,name=strip(string=FullPath,prefix=tempfolder)) AS Upload
-      FROM glob(globs=tempfolder + "/**")
+    query: |
+      SELECT upload(file=FullPath,
+                    name=strip(string=FullPath,prefix=tempfolder)) AS Upload
+      FROM glob(globs="/**", root=tempfolder)
       WHERE Upload

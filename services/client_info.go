@@ -1,9 +1,12 @@
 package services
 
 import (
+	"errors"
 	"sync"
 
+	"google.golang.org/protobuf/proto"
 	actions_proto "www.velocidex.com/golang/velociraptor/actions/proto"
+	crypto_proto "www.velocidex.com/golang/velociraptor/crypto/proto"
 )
 
 var (
@@ -20,11 +23,24 @@ const (
 
 type ClientOS int
 
-func GetClientInfoManager() ClientInfoManager {
+// Keep some stats about the client in the cache. These will be synced
+// to disk periodically.
+type Stats struct {
+	Ping                  uint64 `json:"Ping,omitempty"`
+	LastHuntTimestamp     uint64 `json:"LastHuntTimestamp,omitempty"`
+	LastEventTableVersion uint64 `json:"LastEventTableVersion,omitempty"`
+	IpAddress             string `json:"IpAddress,omitempty"`
+}
+
+func GetClientInfoManager() (ClientInfoManager, error) {
 	client_info_manager_mu.Lock()
 	defer client_info_manager_mu.Unlock()
 
-	return client_info_manager
+	if client_info_manager == nil {
+		return nil, errors.New("Client Info Manager not initialized")
+	}
+
+	return client_info_manager, nil
 }
 
 func RegisterClientInfoManager(m ClientInfoManager) {
@@ -35,32 +51,63 @@ func RegisterClientInfoManager(m ClientInfoManager) {
 }
 
 type ClientInfo struct {
-	Hostname string
-	OS       ClientOS
-
-	Info *actions_proto.ClientInfo
+	// The original info from disk
+	actions_proto.ClientInfo
 }
 
-func (self ClientInfo) OSString() string {
-	switch self.OS {
-	case Windows:
-		return "windows"
-	case Linux:
-		return "Linux"
-	case MacOS:
-		return "MacOS"
+func (self ClientInfo) Copy() ClientInfo {
+	copy := proto.Clone(&self.ClientInfo).(*actions_proto.ClientInfo)
+	return ClientInfo{*copy}
+}
+
+func (self ClientInfo) OS() ClientOS {
+	switch self.System {
+	case "windows":
+		return Windows
+	case "linux":
+		return Linux
+	case "darwin":
+		return MacOS
 	}
-	return "Unknown"
+	return Unknown
 }
 
 type ClientInfoManager interface {
 	Get(client_id string) (*ClientInfo, error)
+
+	GetStats(client_id string) (*Stats, error)
+	UpdateStats(client_id string, stats *Stats) error
+
+	// Get the client's tasks and remove them from the queue.
+	GetClientTasks(client_id string) ([]*crypto_proto.VeloMessage, error)
+
+	// Get all the tasks without de-queuing them.
+	PeekClientTasks(client_id string) ([]*crypto_proto.VeloMessage, error)
+
+	QueueMessagesForClient(
+		client_id string,
+		req []*crypto_proto.VeloMessage,
+		notify bool, /* Also notify the client about the new task */
+	) error
+
+	QueueMessageForClient(
+		client_id string,
+		req *crypto_proto.VeloMessage,
+		notify bool, /* Also notify the client about the new task */
+		completion func()) error
+
+	UnQueueMessageForClient(
+		client_id string,
+		req *crypto_proto.VeloMessage) error
+
+	// Remove client id from the cache - this is needed when the
+	// record chages and we need to force a read from storage.
 	Flush(client_id string)
 }
 
 func GetHostname(client_id string) string {
-	client_info_manager := GetClientInfoManager()
-	if client_info_manager == nil {
+	client_info_manager, err := GetClientInfoManager()
+	if err != nil {
 		return ""
 	}
 	info, err := client_info_manager.Get(client_id)

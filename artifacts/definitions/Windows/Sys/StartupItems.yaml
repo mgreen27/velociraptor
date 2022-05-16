@@ -24,20 +24,17 @@ parameters:
 sources:
   - precondition:
       SELECT OS From info() where OS = 'windows'
-    queries:
-      - |
+    query: |
         /* We need to search this multiple times so we materialize it
            into a variable (using the <= operator)
          */
         LET approved <=
            SELECT Name as ApprovedName,
                   encode(string=Data, type="hex") as Enabled
-           FROM glob(globs=split(
-                     string=startupApprovedGlobs, sep="[, ]+"),
-                     accessor="reg")
+           FROM glob(globs=split(string=startupApprovedGlobs, sep="[, ]+"),
+                     accessor="registry")
            WHERE Enabled =~ "^0[0-9]0+$"
 
-      - |
         LET registry_runners = SELECT Name,
           FullPath, Data.value as Command,
           if(
@@ -48,22 +45,19 @@ sources:
            then="enabled", else="disabled") as Enabled
           FROM glob(
            globs=split(string=runKeyGlobs, sep="[, ]+"),
-           accessor="reg")
+           accessor="registry")
 
-      - |
         LET file_runners = SELECT * FROM foreach(
            row={
               SELECT Name, FullPath
               FROM glob(
-                 globs=split(string=startupFolderDirectories,
-                 sep=",\\s*"))
+                 globs=split(string=startupFolderDirectories, sep=",\\s*"))
            }, query={
               SELECT Name, FullPath, "enable" as Enabled,
                   encode(string=Data, type='utf16') as Command
               FROM read_file(filenames=FullPath)
            })
 
-      - |
         SELECT * from chain(
            first=registry_runners,
            second=file_runners)

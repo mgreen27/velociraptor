@@ -110,6 +110,26 @@ parameters:
     default: ""
     description: An optional output directory prefix
 
+  - name: opt_cpu_limit
+    default: "0"
+    type: int
+    description: A number between 0 to 100 representing the target maximum CPU utilization during running of this artifact.
+
+  - name: opt_progress_timeout
+    default: "1800"
+    type: int
+    description: |
+      If specified the collector is terminated if it made no progress
+      in this long. Note: Execution time may be a lot longer since
+      each time any result is produced this counter is reset.
+
+  - name: opt_timeout
+    default: "0"
+    type: int
+    description: |
+      If specified the collection must complete in the given time. It
+      will be cancelled if the collection exceeds this time.
+
   - name: StandardCollection
     type: hidden
     default: |
@@ -131,6 +151,9 @@ parameters:
       LET report_filename <= if(condition=Template, then=filename + ".html")
       SELECT * FROM collect(artifacts=Artifacts, report=report_filename,
           args=Parameters, output=filename + ".zip", template=Template,
+          cpu_limit=CpuLimit,
+          progress_timeout=ProgressTimeout,
+          timeout=Timeout,
           password=Password, level=Level, format=Format)
 
   - name: S3Collection
@@ -221,6 +244,9 @@ parameters:
           format=Format,
           output=tempfile(extension=".zip"),
           template=Template,
+          cpu_limit=CpuLimit,
+          progress_timeout=ProgressTimeout,
+          timeout=Timeout,
           password=Password,
           level=Level)
 
@@ -267,18 +293,24 @@ parameters:
        grabs files from the local archive.
 
     default: |
-       LET temp_binary <= tempfile(extension=".exe",
-                remove_last=TRUE, permissions="x")
+       LET RequiredTool <= ToolName
 
-       LET matching_tools = SELECT ToolName AS ArchiveTool, Filename
+       LET matching_tools <= SELECT ToolName, Filename
        FROM parse_csv(filename="/inventory.csv", accessor="me")
+       WHERE RequiredTool = ToolName
 
-       SELECT * FROM foreach(row=matching_tools, query={
-         SELECT copy(filename=Filename, accessor="me", dest=temp_binary) AS FullPath,
-                     Filename AS Name
-         FROM scope()
-         WHERE ToolName = ArchiveTool
-       })
+       LET get_ext(filename) = parse_string_with_regex(
+             regex="(\\.[a-z0-9]+)$", string=filename).g1
+
+       LET temp_binary <= if(condition=matching_tools,
+       then=tempfile(
+                extension=get_ext(filename=matching_tools[0].Filename),
+                remove_last=TRUE,
+                permissions=if(condition=IsExecutable, then="x")))
+
+       SELECT copy(filename=Filename, accessor="me", dest=temp_binary) AS FullPath,
+              Filename AS Name
+       FROM matching_tools
 
 sources:
   - query: |
@@ -308,6 +340,8 @@ sources:
       )
 
       // Repack this binary.
+      LET _ <= log(message="Will get tool " + tool_name[0].Type)
+
       LET target_binary <= SELECT FullPath, Name
          FROM Artifact.Generic.Utils.FetchBinary(
             ToolName=tool_name[0].Type, SleepDuration="0",
@@ -335,13 +369,13 @@ sources:
       LET definitions <= SELECT * FROM chain(
       a = { SELECT name, description, tools, parameters, sources, reports
             FROM artifact_definitions(names=artifacts)
-            WHERE name =~ "^(Custom|Packs)\\." AND
+            WHERE NOT built_in AND
               log(message="Adding artifact_definition for " + name) },
 
       -- Support custom templates
       a2 = { SELECT name, description, tools, parameters, sources, reports
             FROM artifact_definitions(names=template)
-            WHERE name =~ "^(Custom|Packs)\\." AND
+            WHERE NOT built_in AND
               log(message="Adding artifact_definition for template " + name) },
 
       // Create the definition of the Collector artifact.
@@ -357,6 +391,11 @@ sources:
                     dict(name="Level", default=opt_level, type="int"),
                     dict(name="Format", default=opt_format),
                     dict(name="OutputPrefix", default=opt_output_directory),
+                    dict(name="CpuLimit", type="int",
+                         default=opt_cpu_limit),
+                    dict(name="ProgressTimeout", type="int",
+                         default=opt_progress_timeout),
+                    dict(name="Timeout", default=opt_timeout, type="int"),
                     dict(name="target_args",
                          default=serialize(format='json', item=target_args),
                          type="json"),
@@ -370,7 +409,7 @@ sources:
                dict(name="SleepDuration", type="int", default="0"),
                dict(name="ToolName"),
                dict(name="ToolInfo"),
-               dict(name="IsExecutable", type="bool"),
+               dict(name="IsExecutable", type="bool", default="Y"),
             ) AS parameters,
             (
                dict(query=FetchBinaryOverride),
@@ -395,6 +434,7 @@ sources:
       )
 
       LET me <= SELECT Exe FROM info()
+                WHERE log(message="My binary is " + Exe)
 
       // Copy the configuration to a temp file and shell out to our
       // binary to repack it.

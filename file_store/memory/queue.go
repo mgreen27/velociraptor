@@ -16,6 +16,7 @@ import (
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/file_store/api"
 	"www.velocidex.com/golang/velociraptor/file_store/tests"
+	"www.velocidex.com/golang/velociraptor/json"
 	"www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/result_sets"
 	"www.velocidex.com/golang/velociraptor/utils"
@@ -51,6 +52,18 @@ type QueuePool struct {
 	config_obj *config_proto.Config
 
 	registrations map[string][]*Listener
+}
+
+func (self *QueuePool) GetWatchers() []string {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+
+	result := make([]string, 0, len(self.registrations))
+	for name := range self.registrations {
+		result = append(result, name)
+	}
+
+	return result
 }
 
 func (self *QueuePool) Register(vfs_path string) (<-chan *ordereddict.Dict, func()) {
@@ -115,6 +128,31 @@ func (self *QueuePool) getRegistrations(vfs_path string) []*Listener {
 	return nil
 }
 
+func (self *QueuePool) BroadcastJsonl(vfs_path string, jsonl []byte) {
+	// Ensure we do not hold the lock for very long here.
+	registrations := self.getRegistrations(vfs_path)
+	if len(registrations) > 0 {
+		// If there are any registrations, we must parse the JSON and
+		// relay each row to each listener - this is expensive but
+		// necessary.
+		rows, err := utils.ParseJsonToDicts(jsonl)
+		if err == nil {
+			for _, row := range rows {
+				for _, item := range registrations {
+					select {
+					case item.Channel <- row:
+					case <-time.After(2 * time.Second):
+						logger := logging.GetLogger(
+							self.config_obj, &logging.FrontendComponent)
+						logger.Error("QueuePool: Dropping message to queue %v",
+							item.name)
+					}
+				}
+			}
+		}
+	}
+}
+
 func (self *QueuePool) Broadcast(vfs_path string, row *ordereddict.Dict) {
 	// Ensure we do not hold the lock for very long here.
 	for _, item := range self.getRegistrations(vfs_path) {
@@ -149,11 +187,42 @@ func (self *MemoryQueueManager) Debug() {
 	}
 }
 
+func (self *MemoryQueueManager) Broadcast(
+	path_manager api.PathManager, dict_rows []*ordereddict.Dict) {
+	pool := GlobalQueuePool(self.config_obj)
+	for _, row := range dict_rows {
+		// Set a timestamp per event for easier querying.
+		row.Set("_ts", int(self.Clock.Now().Unix()))
+		pool.Broadcast(path_manager.GetQueueName(), row)
+	}
+}
+
+func (self *MemoryQueueManager) PushEventJsonl(
+	path_manager api.PathManager, jsonl []byte) error {
+
+	// Writes are asyncronous
+	rs_writer, err := result_sets.NewTimedResultSetWriter(
+		self.FileStore, path_manager, nil, nil)
+	if err != nil {
+		return err
+	}
+	defer rs_writer.Close()
+
+	jsonl = json.AppendJsonlItem(jsonl, "_ts", int(self.Clock.Now().Unix()))
+	rs_writer.WriteJSONL(jsonl, 0)
+
+	GlobalQueuePool(self.config_obj).BroadcastJsonl(
+		path_manager.GetQueueName(), jsonl)
+
+	return nil
+}
+
 func (self *MemoryQueueManager) PushEventRows(
 	path_manager api.PathManager, dict_rows []*ordereddict.Dict) error {
 
+	// Writes are asyncronous
 	rs_writer, err := result_sets.NewTimedResultSetWriter(
-		self.FileStore, path_manager, nil)
+		self.FileStore, path_manager, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -169,8 +238,13 @@ func (self *MemoryQueueManager) PushEventRows(
 	return nil
 }
 
+func (self *MemoryQueueManager) GetWatchers() []string {
+	return GlobalQueuePool(self.config_obj).GetWatchers()
+}
+
 func (self *MemoryQueueManager) Watch(
-	ctx context.Context, queue_name string) (output <-chan *ordereddict.Dict, cancel func()) {
+	ctx context.Context, queue_name string,
+	queue_options *api.QueueOptions) (output <-chan *ordereddict.Dict, cancel func()) {
 	return GlobalQueuePool(self.config_obj).Register(queue_name)
 }
 

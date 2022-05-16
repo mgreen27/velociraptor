@@ -34,6 +34,7 @@ parameters:
   - name: EvtxGlob
     default: '%SystemRoot%\System32\Winevt\Logs\*.evtx'
   - name: IocRegex
+    type: regex
     description: "IOC Regex"
     default:
   - name: WhitelistRegex
@@ -88,6 +89,8 @@ sources:
                     System.Channel as Channel,
                     System.EventID.Value as EventID,
                     System.EventRecordID as EventRecordID,
+                    System.Security.UserID as UserSID,
+                    lookupSID(sid=System.Security.UserID) as Username,
                     get(field="EventData") as EventData,
                     get(field="UserData") as UserData,
                     get(field="Message") as Message,
@@ -123,5 +126,5 @@ sources:
 
       -- return rows
       SELECT * FROM if(condition=SearchVSS,
-        then=include_vss,
-        else=exclude_vss)
+        then={ SELECT * FROM include_vss },
+        else={ SELECT * FROM exclude_vss })

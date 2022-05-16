@@ -9,7 +9,7 @@ import (
 	"github.com/Velocidex/go-magic/magic"
 	"github.com/Velocidex/go-magic/magic_files"
 	"github.com/Velocidex/ordereddict"
-	"www.velocidex.com/golang/velociraptor/glob"
+	"www.velocidex.com/golang/velociraptor/accessors"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
 	"www.velocidex.com/golang/vfilter"
 	"www.velocidex.com/golang/vfilter/arg_parser"
@@ -94,8 +94,14 @@ func (self MagicFunction) Call(
 		return handle.File(arg.Path)
 	}
 
+	err = vql_subsystem.CheckFilesystemAccess(scope, arg.Accessor)
+	if err != nil {
+		scope.Log("magic: %v", err)
+		return vfilter.Null{}
+	}
+
 	// Read a header from the file and pass to the libmagic
-	accessor, err := glob.GetAccessor(arg.Accessor, scope)
+	accessor, err := accessors.GetAccessor(arg.Accessor, scope)
 	if err != nil {
 		scope.Log("magic: %v", err)
 		return vfilter.Null{}

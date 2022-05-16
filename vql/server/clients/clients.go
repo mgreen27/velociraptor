@@ -27,15 +27,14 @@ import (
 	"github.com/Velocidex/ordereddict"
 	"www.velocidex.com/golang/velociraptor/acls"
 	"www.velocidex.com/golang/velociraptor/json"
-	"www.velocidex.com/golang/velociraptor/search"
-	vsearch "www.velocidex.com/golang/velociraptor/search"
+	"www.velocidex.com/golang/velociraptor/services"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
 	"www.velocidex.com/golang/vfilter"
 	"www.velocidex.com/golang/vfilter/arg_parser"
 )
 
 type ClientsPluginArgs struct {
-	Search   string `vfilter:"optional,field=search,doc=Client search string. Can have the following prefixes: 'lable:', 'host:'"`
+	Search   string `vfilter:"optional,field=search,doc=Client search string. Can have the following prefixes: 'label:', 'host:'"`
 	Start    uint64 `vfilter:"optional,field=start,doc=First client to fetch (0)'"`
 	Limit    uint64 `vfilter:"optional,field=count,doc=Maximum number of clients to fetch (1000)'"`
 	ClientId string `vfilter:"optional,field=client_id"`
@@ -73,9 +72,14 @@ func (self ClientsPlugin) Call(
 
 		// If a client id is specified we do not need to search at all.
 		if arg.ClientId != "" {
-			api_client, err := vsearch.GetApiClient(
-				ctx, config_obj,
-				arg.ClientId, false /* detailed */)
+			indexer, err := services.GetIndexer()
+			if err != nil {
+				scope.Log("clients: %v", err)
+				return
+			}
+
+			api_client, err := indexer.FastGetApiClient(
+				ctx, config_obj, arg.ClientId)
 			if err == nil {
 				select {
 				case <-ctx.Done():
@@ -96,7 +100,13 @@ func (self ClientsPlugin) Call(
 			limit = 100000
 		}
 
-		search_chan, err := search.SearchClientsChan(ctx, scope,
+		indexer, err := services.GetIndexer()
+		if err != nil {
+			scope.Log("client_info: %s", err.Error())
+			return
+		}
+
+		search_chan, err := indexer.SearchClientsChan(ctx, scope,
 			config_obj, search_term, vql_subsystem.GetPrincipal(scope))
 		if err != nil {
 			scope.Log("clients: %v", err)
@@ -109,7 +119,6 @@ func (self ClientsPlugin) Call(
 				return
 			case output_chan <- json.ConvertProtoToOrderedDict(api_client):
 			}
-			vfilter.ChargeOp(scope)
 		}
 	}()
 
@@ -153,8 +162,14 @@ func (self *ClientInfoFunction) Call(ctx context.Context,
 		return vfilter.Null{}
 	}
 
-	api_client, err := search.GetApiClient(ctx,
-		config_obj, arg.ClientId, false /* detailed */)
+	indexer, err := services.GetIndexer()
+	if err != nil {
+		scope.Log("client_info: %s", err.Error())
+		return vfilter.Null{}
+	}
+
+	api_client, err := indexer.FastGetApiClient(ctx,
+		config_obj, arg.ClientId)
 	if err != nil {
 		scope.Log("client_info: %s", err.Error())
 		return vfilter.Null{}

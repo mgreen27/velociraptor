@@ -29,8 +29,8 @@ import (
 	"sync"
 
 	"github.com/Velocidex/yaml/v2"
-	"github.com/golang/protobuf/proto"
 	errors "github.com/pkg/errors"
+	"google.golang.org/protobuf/proto"
 	"www.velocidex.com/golang/velociraptor/acls"
 	artifacts_proto "www.velocidex.com/golang/velociraptor/artifacts/proto"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
@@ -67,11 +67,14 @@ func (self *Repository) Copy() services.Repository {
 	return result
 }
 
-func (self *Repository) LoadDirectory(config_obj *config_proto.Config, dirname string) (int, error) {
+func (self *Repository) LoadDirectory(
+	config_obj *config_proto.Config, dirname string,
+	override_builtins bool) (int, error) {
 	self.mu.Lock()
 
 	count := 0
 	if utils.InString(self.loaded_dirs, dirname) {
+		self.mu.Unlock()
 		return count, nil
 	}
 	dirname = filepath.Clean(dirname)
@@ -93,7 +96,9 @@ func (self *Repository) LoadDirectory(config_obj *config_proto.Config, dirname s
 					logger.Error("Could not load %s: %s", info.Name(), err)
 					return nil
 				}
-				_, err = self.LoadYaml(string(data), false)
+				_, err = self.LoadYaml(string(data),
+					false, /* validate */
+					override_builtins)
 				if err != nil {
 					logger.Error("Could not load %s: %s", info.Name(), err)
 					return nil
@@ -138,7 +143,7 @@ func sanitize_artifact_yaml(data string) string {
 	return result
 }
 
-func (self *Repository) LoadYaml(data string, validate bool) (
+func (self *Repository) LoadYaml(data string, validate, built_in bool) (
 	*artifacts_proto.Artifact, error) {
 	artifact := &artifacts_proto.Artifact{}
 	err := yaml.UnmarshalStrict([]byte(sanitize_artifact_yaml(data)), artifact)
@@ -147,12 +152,21 @@ func (self *Repository) LoadYaml(data string, validate bool) (
 	}
 
 	artifact.Raw = data
+	artifact.BuiltIn = built_in
 	artifact.Compiled = false
 	return self.LoadProto(artifact, validate)
 }
 
 func (self *Repository) LoadProto(artifact *artifacts_proto.Artifact, validate bool) (
 	*artifacts_proto.Artifact, error) {
+
+	if artifact == nil {
+		return nil, errors.New("Invalid artifact")
+	}
+
+	// Make a copy of the artifact to store in the repository.
+	artifact = proto.Clone(artifact).(*artifacts_proto.Artifact)
+
 	self.mu.Lock()
 	defer self.mu.Unlock()
 
@@ -209,15 +223,17 @@ func (self *Repository) LoadProto(artifact *artifacts_proto.Artifact, validate b
 	// VQL. We do not need to validate embedded artifacts since we
 	// assume they are ok if they passed CI.
 	if validate {
+		// Check RequiredPermissions
 		for _, perm := range artifact.RequiredPermissions {
 			if acls.GetPermission(perm) == acls.NO_PERMISSIONS {
 				return nil, errors.New("Invalid artifact permission")
 			}
 		}
 
-		// Ensure precodition has correct syntax
+		// Ensure precodition has correct syntax - it should be a VQL
+		// query.
 		if artifact.Precondition != "" {
-			_, err := vfilter.Parse(artifact.Precondition)
+			_, err := vfilter.MultiParse(artifact.Precondition)
 			if err != nil {
 				return nil, fmt.Errorf(
 					"While parsing artifact precondition: %w", err)
@@ -226,13 +242,14 @@ func (self *Repository) LoadProto(artifact *artifacts_proto.Artifact, validate b
 
 		// Ensure export has correct syntax
 		if artifact.Export != "" {
-			_, err := vfilter.Parse(artifact.Export)
+			_, err := vfilter.MultiParse(artifact.Export)
 			if err != nil {
 				return nil, fmt.Errorf(
 					"While parsing artifact export: %w", err)
 			}
 		}
 
+		// Check each source for validity
 		for _, source := range artifact.Sources {
 			if source.Precondition != "" {
 				if artifact.Precondition != "" {
@@ -241,7 +258,7 @@ func (self *Repository) LoadProto(artifact *artifacts_proto.Artifact, validate b
 							"and a source precondition.", artifact.Name)
 				}
 
-				_, err := vfilter.Parse(source.Precondition)
+				_, err := vfilter.MultiParse(source.Precondition)
 				if err != nil {
 					return nil, fmt.Errorf("While parsing precondition: %w", err)
 				}
@@ -280,11 +297,32 @@ func (self *Repository) LoadProto(artifact *artifacts_proto.Artifact, validate b
 				}
 			}
 
+			// If the source defines any notebook cells check they are
+			// valid.
+			for _, cell := range source.Notebook {
+				cell.Type = strings.ToLower(cell.Type)
+				switch cell.Type {
+				case "md", "markdown", "vql", "vql_suggestion":
+				default:
+					return nil, fmt.Errorf(
+						"Artifact %s contains an invalid notebook cell type: %v",
+						artifact.Name, cell.Type)
+				}
+			}
 		}
 	}
 
 	if artifact.Name == "" {
 		return nil, errors.New("No artifact name")
+	}
+
+	// Prevent artifact from being overridden.
+	if !artifact.BuiltIn {
+		existing_artifact, pres := self.Data[artifact.Name]
+		if pres && existing_artifact.BuiltIn {
+			return nil, fmt.Errorf("Unable to override built in artifact %v",
+				artifact.Name)
+		}
 	}
 
 	self.Data[artifact.Name] = artifact
@@ -311,8 +349,10 @@ func (self *Repository) GetArtifactType(
 func (self *Repository) GetSource(
 	config_obj *config_proto.Config, name string) (*artifacts_proto.ArtifactSource, bool) {
 	artifact_name, source_name := paths.SplitFullSourceName(name)
+	self.mu.Lock()
+	defer self.mu.Unlock()
 
-	artifact, pres := self.Get(config_obj, artifact_name)
+	artifact, pres := self.get(artifact_name)
 	if !pres {
 		return nil, false
 	}
@@ -328,11 +368,18 @@ func (self *Repository) GetSource(
 func (self *Repository) Get(
 	config_obj *config_proto.Config, name string) (*artifacts_proto.Artifact, bool) {
 	self.mu.Lock()
-	defer self.mu.Unlock()
-
-	result, pres := self.get(name)
+	cached_artifact, pres := self.get(name)
 	if !pres {
+		self.mu.Unlock()
 		return nil, false
+	}
+
+	// Return a copy to keep the repository pristine.
+	result := proto.Clone(cached_artifact).(*artifacts_proto.Artifact)
+	self.mu.Unlock()
+
+	if result.Compiled {
+		return result, true
 	}
 
 	// Delay processing until we need it. This means loading
@@ -344,8 +391,12 @@ func (self *Repository) Get(
 		return nil, false
 	}
 
-	// Return a copy to keep the repository pristine.
-	return proto.Clone(result).(*artifacts_proto.Artifact), true
+	// Store the compiled version in the repository for next time.
+	self.mu.Lock()
+	self.Data[result.Name] = result
+	self.mu.Unlock()
+
+	return result, true
 }
 
 func (self *Repository) get(name string) (*artifacts_proto.Artifact, bool) {

@@ -24,16 +24,15 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/golang/protobuf/ptypes/empty"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"www.velocidex.com/golang/velociraptor/acls"
 	api_proto "www.velocidex.com/golang/velociraptor/api/proto"
 	"www.velocidex.com/golang/velociraptor/datastore"
 	"www.velocidex.com/golang/velociraptor/flows"
 	flows_proto "www.velocidex.com/golang/velociraptor/flows/proto"
 	"www.velocidex.com/golang/velociraptor/paths"
-	"www.velocidex.com/golang/velociraptor/search"
 	"www.velocidex.com/golang/velociraptor/services"
 )
 
@@ -70,7 +69,7 @@ func (self *ApiServer) GetClientMetadata(
 
 func (self *ApiServer) SetClientMetadata(
 	ctx context.Context,
-	in *api_proto.ClientMetadata) (*empty.Empty, error) {
+	in *api_proto.ClientMetadata) (*emptypb.Empty, error) {
 
 	user_name := GetGRPCUserInfo(self.config, ctx, self.ca_pool).Name
 	permissions := acls.LABEL_CLIENT
@@ -87,7 +86,7 @@ func (self *ApiServer) SetClientMetadata(
 	}
 
 	err = db.SetSubject(self.config, client_path_manager.Metadata(), in)
-	return &empty.Empty{}, err
+	return &emptypb.Empty{}, err
 }
 
 func (self *ApiServer) GetClient(
@@ -102,27 +101,31 @@ func (self *ApiServer) GetClient(
 			"User is not allowed to view clients.")
 	}
 
+	indexer, err := services.GetIndexer()
+	if err != nil {
+		return nil, err
+	}
+
+	// Update the user's MRU
 	if in.UpdateMru {
-		err = search.UpdateMRU(self.config, user_name, in.ClientId)
+		err = indexer.UpdateMRU(self.config, user_name, in.ClientId)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	api_client, err := search.GetApiClient(ctx,
-		self.config,
-		in.ClientId,
-		!in.Lightweight, // Detailed
-	)
+	api_client, err := indexer.FastGetApiClient(ctx, self.config, in.ClientId)
 	if err != nil {
 		return nil, err
 	}
 
-	if self.server_obj != nil && !in.Lightweight &&
-		// Wait up to 2 seconds to find out if clients are connected.
-		services.GetNotifier().IsClientConnected(ctx,
-			self.config, in.ClientId, 2) {
-		api_client.LastSeenAt = uint64(time.Now().UnixNano() / 1000)
+	if self.server_obj != nil {
+		if !in.Lightweight &&
+			// Wait up to 2 seconds to find out if clients are connected.
+			services.GetNotifier().IsClientConnected(ctx,
+				self.config, in.ClientId, 2) {
+			api_client.LastSeenAt = uint64(time.Now().UnixNano() / 1000)
+		}
 	}
 
 	return api_client, nil

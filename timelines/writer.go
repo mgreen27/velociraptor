@@ -10,6 +10,7 @@ import (
 	"www.velocidex.com/golang/velociraptor/json"
 	vjson "www.velocidex.com/golang/velociraptor/json"
 	"www.velocidex.com/golang/velociraptor/paths"
+	"www.velocidex.com/golang/velociraptor/result_sets"
 )
 
 const (
@@ -35,39 +36,61 @@ type TimelineWriter struct {
 
 func (self *TimelineWriter) Write(
 	timestamp time.Time, row *ordereddict.Dict) error {
-	offset, err := self.fd.Size()
-	if err != nil {
-		return err
-	}
-
-	out := &bytes.Buffer{}
-	offsets := &bytes.Buffer{}
 	serialized, err := vjson.MarshalWithOptions(row, self.opts)
 	if err != nil {
 		return err
 	}
 
-	// Write line delimited JSON
-	out.Write(serialized)
-	out.Write([]byte{'\n'})
-	idx_record := &IndexRecord{
-		Timestamp: timestamp.UnixNano(),
-		Offset:    offset,
+	return self.WriteBuffer(timestamp, serialized)
+}
+
+// Write potentially multiple rows into the file at the same
+// timestamp.
+func (self *TimelineWriter) WriteBuffer(
+	timestamp time.Time, serialized []byte) error {
+
+	if len(serialized) == 0 {
+		return nil
 	}
 
-	err = binary.Write(offsets, binary.LittleEndian, idx_record)
+	// Only add a single lf if needed. Serialized must end with a
+	// single \n.
+	if serialized[len(serialized)-1] != '\n' {
+		serialized = append(serialized, '\n')
+	}
+
+	offset, err := self.fd.Size()
 	if err != nil {
 		return err
 	}
 
-	// Include the line feed in the count.
-	offset += int64(len(serialized) + 1)
+	// A buffer to prepare the index in memory.
+	offsets := &bytes.Buffer{}
 
-	_, err = self.fd.Write(out.Bytes())
-	if err != nil {
-		return err
+	// Prepare the index records without parsing the actual JSON.
+	for idx, c := range serialized {
+		// A LF represents the end of the record.
+		if idx == 0 ||
+			idx < len(serialized)-1 && c == '\n' {
+			idx_record := &IndexRecord{
+				Timestamp: timestamp.UnixNano(),
+				Offset:    offset + int64(idx),
+			}
+			err = binary.Write(offsets, binary.LittleEndian, idx_record)
+			if err != nil {
+				return err
+			}
+		}
 	}
+
+	// Write the index data
 	_, err = self.index_fd.Write(offsets.Bytes())
+	if err != nil {
+		return err
+	}
+
+	// Write the bulk data
+	_, err = self.fd.Write(serialized)
 	return err
 }
 
@@ -84,9 +107,13 @@ func (self *TimelineWriter) Close() {
 func NewTimelineWriter(
 	file_store_factory api.FileStore,
 	path_manager paths.TimelinePathManagerInterface,
-	truncate bool) (*TimelineWriter, error) {
-	fd, err := file_store_factory.WriteFile(
-		path_manager.Path())
+	completion func(),
+	truncate result_sets.WriteMode) (*TimelineWriter, error) {
+
+	result := &TimelineWriter{}
+
+	fd, err := file_store_factory.WriteFileWithCompletion(
+		path_manager.Path(), completion)
 	if err != nil {
 		return nil, err
 	}
@@ -103,6 +130,9 @@ func NewTimelineWriter(
 		index_fd.Truncate()
 	}
 
-	return &TimelineWriter{fd: fd, index_fd: index_fd}, nil
+	result.fd = fd
+	result.index_fd = index_fd
+
+	return result, nil
 
 }

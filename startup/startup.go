@@ -53,6 +53,7 @@ func getServerServices(config_obj *config_proto.Config) *config_proto.ServerServ
 			ApiServer:         true,
 			FrontendServer:    true,
 			GuiServer:         true,
+			IndexServer:       true,
 		}
 	}
 
@@ -60,6 +61,22 @@ func getServerServices(config_obj *config_proto.Config) *config_proto.ServerServ
 }
 
 func StartupEssentialServices(sm *services.Service) error {
+	spec := getServerServices(sm.Config)
+
+	err := sm.Start(datastore.StartRemoteDatastore)
+	if err != nil {
+		return err
+	}
+
+	// Updates DynDNS records if needed. Frontends need to maintain
+	// their IP addresses.
+	if spec.DynDns {
+		err := sm.Start(ddclient.StartDynDNSService)
+		if err != nil {
+			return err
+		}
+	}
+
 	j, _ := services.GetJournal()
 	if j == nil {
 		err := sm.Start(journal.StartJournalService)
@@ -113,13 +130,6 @@ func StartupEssentialServices(sm *services.Service) error {
 		}
 	}
 
-	if services.GetClientInfoManager() == nil {
-		err := sm.Start(client_info.StartClientInfoService)
-		if err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
@@ -132,9 +142,19 @@ func StartupFrontendServices(sm *services.Service) error {
 		return err
 	}
 
-	err = sm.Start(indexing.StartIndexingService)
+	_, err = services.GetClientInfoManager()
 	if err != nil {
-		return err
+		err := sm.Start(client_info.StartClientInfoService)
+		if err != nil {
+			return err
+		}
+	}
+
+	if spec.IndexServer {
+		err = sm.Start(indexing.StartIndexingService)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Check everything is ok before we can start.
@@ -150,14 +170,6 @@ func StartupFrontendServices(sm *services.Service) error {
 
 	if spec.SanityChecker {
 		err := sm.Start(sanity.StartSanityCheckService)
-		if err != nil {
-			return err
-		}
-	}
-
-	// Updates DynDNS records if needed. Frontends need to maintain their IP addresses.
-	if spec.DynDns {
-		err := sm.Start(ddclient.StartDynDNSService)
 		if err != nil {
 			return err
 		}

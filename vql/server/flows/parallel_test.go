@@ -18,6 +18,7 @@ import (
 	"www.velocidex.com/golang/velociraptor/paths/artifacts"
 	"www.velocidex.com/golang/velociraptor/result_sets"
 	"www.velocidex.com/golang/velociraptor/services"
+	"www.velocidex.com/golang/velociraptor/utils"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
 	"www.velocidex.com/golang/vfilter"
 
@@ -42,7 +43,7 @@ func (self *TestSuite) TestArtifactSource() {
 	repository, err := manager.GetGlobalRepository(self.ConfigObj)
 	assert.NoError(self.T(), err)
 
-	_, err = repository.LoadYaml(testArtifact, true)
+	_, err = repository.LoadYaml(testArtifact, true, true)
 	assert.NoError(self.T(), err)
 
 	file_store_factory := file_store.GetFileStore(self.ConfigObj)
@@ -55,7 +56,7 @@ func (self *TestSuite) TestArtifactSource() {
 	// Append logs to messages from previous packets.
 	rs_writer, err := result_sets.NewResultSetWriter(
 		file_store_factory, path_manager.Path(),
-		nil, true /* truncate */)
+		nil, utils.SyncCompleter, true /* truncate */)
 	assert.NoError(self.T(), err)
 
 	for i := 0; i < 100; i++ {
@@ -120,7 +121,7 @@ func (self *TestSuite) TestHuntsSource() {
 	repository, err := manager.GetGlobalRepository(self.ConfigObj)
 	assert.NoError(self.T(), err)
 
-	_, err = repository.LoadYaml(testArtifact, true)
+	_, err = repository.LoadYaml(testArtifact, true, true)
 	assert.NoError(self.T(), err)
 
 	file_store_factory := file_store.GetFileStore(self.ConfigObj)
@@ -128,7 +129,8 @@ func (self *TestSuite) TestHuntsSource() {
 	hunt_id := "H.123"
 	hunt_path_manager := paths.NewHuntPathManager(hunt_id).Clients()
 	hunt_rs_writer, err := result_sets.NewResultSetWriter(
-		file_store_factory, hunt_path_manager, nil, true /* truncate */)
+		file_store_factory, hunt_path_manager, nil,
+		utils.SyncCompleter, true /* truncate */)
 
 	// Write a bunch of flows in a hunt
 	for client_number := 0; client_number < 10; client_number++ {
@@ -149,7 +151,7 @@ func (self *TestSuite) TestHuntsSource() {
 		// Append logs to messages from previous packets.
 		rs_writer, err := result_sets.NewResultSetWriter(
 			file_store_factory, path_manager.Path(),
-			nil, true /* truncate */)
+			nil, utils.SyncCompleter, true /* truncate */)
 		assert.NoError(self.T(), err)
 
 		for i := 0; i < 100; i++ {

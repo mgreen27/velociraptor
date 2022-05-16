@@ -28,7 +28,7 @@ import (
 
 	"github.com/pkg/errors"
 
-	grpcpool "github.com/processout/grpc-go-pool"
+	grpcpool "github.com/Velocidex/grpc-go-pool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"google.golang.org/grpc"
@@ -42,7 +42,6 @@ var (
 	mu    sync.Mutex
 	creds credentials.TransportCredentials
 
-	pool_mu sync.Mutex
 	pool    *grpcpool.Pool
 	address string
 
@@ -52,12 +51,19 @@ var (
 		Name: "grpc_client_calls",
 		Help: "Total number of internal gRPC calls.",
 	})
+
+	grpcTimeoutCounter = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "grpc_client_timeouts",
+		Help: "Total number of timeouts in getting a connection from the pool.",
+	})
+
+	grpcPoolWaiters = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "grpc_client_waiters",
+		Help: "Total number of waiters for a grpc client channel.",
+	})
 )
 
 func getCreds(config_obj *config_proto.Config) (credentials.TransportCredentials, error) {
-	mu.Lock()
-	defer mu.Unlock()
-
 	if creds == nil {
 		var certificate, private_key, ca_certificate, server_name string
 
@@ -130,43 +136,34 @@ func getChannel(
 	ctx context.Context,
 	config_obj *config_proto.Config) (*grpcpool.ClientConn, error) {
 
-	pool_mu.Lock()
-	defer pool_mu.Unlock()
+	// Collect number of callers waiting for a channel - this
+	// indicates backpressure from the grpc pool.
+	grpcPoolWaiters.Inc()
+	defer grpcPoolWaiters.Dec()
 
-	// Pool does not exist - make a new one.
-	if pool == nil {
-		address = GetAPIConnectionString(config_obj)
-		creds, err := getCreds(config_obj)
-		if err != nil {
-			return nil, err
-		}
-
-		factory := func() (*grpc.ClientConn, error) {
-			return grpc.Dial(address,
-				grpc.WithTransportCredentials(creds))
-
-		}
-
-		max_size := 100
-		max_wait := 60
-		if config_obj.Frontend != nil {
-			if config_obj.Frontend.GRPCPoolMaxSize > 0 {
-				max_size = int(config_obj.Frontend.GRPCPoolMaxSize)
-			}
-
-			if config_obj.Frontend.GRPCPoolMaxWait > 0 {
-				max_size = int(config_obj.Frontend.GRPCPoolMaxWait)
-			}
-		}
-
-		pool, err = grpcpool.New(factory, 1, max_size, time.Duration(max_wait)*time.Second)
-		if err != nil {
-			return nil, errors.Errorf(
-				"Unable to connect to gRPC server: %v: %v", address, err)
-		}
+	// Make sure pool is initialized.
+	err := EnsureInit(ctx, config_obj, false /* recreate */)
+	if err != nil {
+		return nil, err
 	}
 
-	return pool.Get(ctx)
+	for {
+		conn, err := pool.Get(ctx)
+		if err == grpcpool.ErrTimeout {
+			grpcTimeoutCounter.Inc()
+			time.Sleep(time.Second)
+
+			// Try to force a new connection pool in case the master
+			// changed it's DNS mapping.
+			err := EnsureInit(ctx, config_obj, true /* recreate */)
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		return conn, err
+	}
 }
 
 func GetAPIConnectionString(config_obj *config_proto.Config) string {
@@ -194,4 +191,48 @@ func GetAPIConnectionString(config_obj *config_proto.Config) string {
 	}
 
 	panic("Unknown API.BindScheme")
+}
+
+func EnsureInit(
+	ctx context.Context,
+	config_obj *config_proto.Config,
+	recreate bool) error {
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !recreate && pool != nil {
+		return nil
+	}
+
+	address = GetAPIConnectionString(config_obj)
+	creds, err := getCreds(config_obj)
+	if err != nil {
+		return err
+	}
+
+	factory := func(ctx context.Context) (*grpc.ClientConn, error) {
+		return grpc.DialContext(ctx, address,
+			grpc.WithTransportCredentials(creds))
+	}
+
+	max_size := 100
+	max_wait := 60
+	if config_obj.Frontend != nil {
+		if config_obj.Frontend.GRPCPoolMaxSize > 0 {
+			max_size = int(config_obj.Frontend.GRPCPoolMaxSize)
+		}
+
+		if config_obj.Frontend.GRPCPoolMaxWait > 0 {
+			max_wait = int(config_obj.Frontend.GRPCPoolMaxWait)
+		}
+	}
+
+	pool, err = grpcpool.NewWithContext(ctx,
+		factory, 1, max_size, time.Duration(max_wait)*time.Second)
+	if err != nil {
+		return errors.Errorf(
+			"Unable to connect to gRPC server: %v: %v", address, err)
+	}
+	return nil
 }

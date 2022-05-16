@@ -18,8 +18,7 @@ parameters:
 sources:
   - precondition:
       SELECT OS From info() where OS = 'windows'
-    queries:
-      - |
+    query: |
         LET installed_sdb <=
            SELECT Key, Key.Name as SdbGUID, DatabasePath,
                   DatabaseType, DatabaseDescription,
@@ -27,8 +26,8 @@ sources:
                   (DatabaseInstallTimeStamp / 10000000) - 11644473600 AS DatabaseInstallTimeStamp
            FROM read_reg_key(
              globs=split(string=shimKeys, sep=",[\\s]*"),
-             accessor="reg")
-      - |
+             accessor="registry")
+
         LET result = SELECT * from foreach(
           row={
             SELECT regex_replace(
@@ -39,9 +38,10 @@ sources:
                source=Name,
                replace="$1",
                re="(\\{[^}]+\\}).*$") as SdbGUIDRef,
-               Name as ExeName from glob(
+               Name as ExeName
+            FROM glob(
               globs=split(string=customKeys, sep=",[\\s]*"),
-              accessor="reg")
+              accessor="registry")
           },
           query={
             SELECT Executable, DatabasePath, DatabaseType,
@@ -49,5 +49,5 @@ sources:
             FROM installed_sdb
             WHERE SdbGUID = SdbGUIDRef
           })
-      - |
+
         SELECT * from result

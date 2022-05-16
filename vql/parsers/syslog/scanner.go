@@ -8,7 +8,9 @@ import (
 
 	"github.com/Velocidex/ordereddict"
 	"github.com/dimchansky/utfbom"
-	"www.velocidex.com/golang/velociraptor/glob"
+	"www.velocidex.com/golang/velociraptor/accessors"
+	"www.velocidex.com/golang/velociraptor/artifacts"
+	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
 	"www.velocidex.com/golang/vfilter"
 	"www.velocidex.com/golang/vfilter/arg_parser"
@@ -103,22 +105,32 @@ func (self _WatchSyslogPlugin) Call(
 		arg := &ScannerPluginArgs{}
 		err := arg_parser.ExtractArgsWithContext(ctx, scope, args, arg)
 		if err != nil {
-			scope.Log("watch_syslog: %s", err.Error())
+			scope.Log("watch_syslog: %v", err)
 			return
 		}
 
 		err = vql_subsystem.CheckFilesystemAccess(scope, arg.Accessor)
 		if err != nil {
-			scope.Log("watch_syslog: %s", err)
+			scope.Log("watch_syslog: %v", err)
 			return
 		}
+
+		// This plugin needs to be running on clients which have no
+		// server config object.
+		client_config_obj, ok := artifacts.GetConfig(scope)
+		if !ok {
+			scope.Log("watch_syslog: unable to get config")
+			return
+		}
+
+		config_obj := &config_proto.Config{Client: client_config_obj}
 
 		event_channel := make(chan vfilter.Row)
 
 		// Register the output channel as a listener to the
 		// global event.
 		for _, filename := range arg.Filenames {
-			cancel := GlobalSyslogService.Register(
+			cancel := GlobalSyslogService(config_obj).Register(
 				filename, arg.Accessor, ctx, scope,
 				event_channel)
 
@@ -155,7 +167,7 @@ func (self _WatchSyslogPlugin) Info(scope vfilter.Scope, type_map *vfilter.TypeM
 
 func maybeOpenGzip(scope vfilter.Scope,
 	accessor_name, filename string) (io.ReadCloser, error) {
-	accessor, err := glob.GetAccessor(accessor_name, scope)
+	accessor, err := accessors.GetAccessor(accessor_name, scope)
 	if err != nil {
 		return nil, err
 	}

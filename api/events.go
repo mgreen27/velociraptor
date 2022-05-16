@@ -6,12 +6,12 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/golang/protobuf/ptypes/empty"
 	context "golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"www.velocidex.com/golang/velociraptor/acls"
 	actions_proto "www.velocidex.com/golang/velociraptor/actions/proto"
 	api_proto "www.velocidex.com/golang/velociraptor/api/proto"
@@ -28,7 +28,7 @@ import (
 
 func (self *ApiServer) PushEvents(
 	ctx context.Context,
-	in *api_proto.PushEventRequest) (*empty.Empty, error) {
+	in *api_proto.PushEventRequest) (*emptypb.Empty, error) {
 
 	// Get the TLS context from the peer and verify its
 	// certificate.
@@ -79,16 +79,17 @@ func (self *ApiServer) PushEvents(
 		}
 
 		// Only return the first row
-		if true {
-			journal, err := services.GetJournal()
-			if err != nil {
-				return nil, err
-			}
-
-			err = journal.PushRowsToArtifact(self.config,
-				rows, in.Artifact, in.ClientId, in.FlowId)
-			return &empty.Empty{}, err
+		journal, err := services.GetJournal()
+		if err != nil {
+			return nil, err
 		}
+
+		// only broadcast the events for local listeners. Minions
+		// write the events themselves, so we just need to broadcast
+		// for any server event artifacts that occur.
+		journal.Broadcast(self.config,
+			rows, in.Artifact, in.ClientId, in.FlowId)
+		return &emptypb.Empty{}, err
 	}
 
 	return nil, status.Error(codes.InvalidArgument, "no peer certs?")
@@ -96,7 +97,7 @@ func (self *ApiServer) PushEvents(
 
 func (self *ApiServer) WriteEvent(
 	ctx context.Context,
-	in *actions_proto.VQLResponse) (*empty.Empty, error) {
+	in *actions_proto.VQLResponse) (*emptypb.Empty, error) {
 
 	// Get the TLS context from the peer and verify its
 	// certificate.
@@ -156,7 +157,7 @@ func (self *ApiServer) WriteEvent(
 
 			err = journal.PushRowsToArtifact(self.config,
 				rows, in.Query.Name, peer_name, "")
-			return &empty.Empty{}, err
+			return &emptypb.Empty{}, err
 		}
 	}
 
@@ -282,7 +283,17 @@ func getAllArtifacts(
 
 	file_store_factory := file_store.GetFileStore(config_obj)
 
-	return file_store_factory.Walk(log_path,
+	manager, err := services.GetRepositoryManager()
+	if err != nil {
+		return err
+	}
+
+	repository, err := manager.GetGlobalRepository(config_obj)
+	if err != nil {
+		return err
+	}
+
+	return api.Walk(file_store_factory, log_path,
 		func(full_path api.FSPathSpec, info os.FileInfo) error {
 			// Walking the events directory will give us
 			// all the day json files. Each day json file
@@ -295,6 +306,17 @@ func getAllArtifacts(
 			if !info.IsDir() && info.Size() > 0 {
 				relative_path := full_path.Dir().
 					Components()[len(log_path.Components()):]
+				if len(relative_path) == 0 {
+					return nil
+				}
+
+				// Check if this is a valid artifact.
+				artifact_base_name := relative_path[0]
+				_, pres := repository.Get(config_obj, artifact_base_name)
+				if !pres {
+					return nil
+				}
+
 				artifact_name := strings.Join(relative_path, "/")
 				event, pres := seen[artifact_name]
 				if !pres {

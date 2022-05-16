@@ -19,29 +19,74 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"sync"
 
-	kingpin "gopkg.in/alecthomas/kingpin.v2"
+	"www.velocidex.com/golang/velociraptor/config"
 	crypto_client "www.velocidex.com/golang/velociraptor/crypto/client"
 	crypto_utils "www.velocidex.com/golang/velociraptor/crypto/utils"
 	"www.velocidex.com/golang/velociraptor/executor"
 	"www.velocidex.com/golang/velociraptor/http_comms"
 	logging "www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/services"
+	"www.velocidex.com/golang/velociraptor/services/journal"
+	"www.velocidex.com/golang/velociraptor/services/repository"
 	"www.velocidex.com/golang/velociraptor/utils"
+	"www.velocidex.com/golang/velociraptor/vql/tools"
 )
 
 var (
 	// Run the client.
-	client = app.Command("client", "Run the velociraptor client")
+	client            = app.Command("client", "Run the velociraptor client")
+	client_quiet_flag = client.Flag("quiet",
+		"Do not output anything to stdout/stderr").Bool()
 )
 
 func RunClient(
 	ctx context.Context,
 	wg *sync.WaitGroup,
-	config_path *string) {
+	config_path *string) error {
 
-	checkMutex()
+	defer wg.Done()
+
+	err := checkMutex()
+	if err != nil {
+		return err
+	}
+
+	for {
+		subctx, cancel := context.WithCancel(ctx)
+		lwg := &sync.WaitGroup{}
+
+		lwg.Add(1)
+		go func() {
+			runClientOnce(subctx, lwg, config_path)
+			cancel()
+		}()
+
+		select {
+		case <-subctx.Done():
+			// Wait for the client to shutdown before we exit.
+			cancel()
+			lwg.Wait()
+			return nil
+
+		case <-tools.ClientRestart:
+			cancel()
+			// Wait for the client to shutdown before we restart it.
+			lwg.Wait()
+		}
+	}
+}
+
+func runClientOnce(
+	ctx context.Context,
+	wg *sync.WaitGroup,
+	config_path *string) (err error) {
+	defer wg.Done()
+
+	lwg := &sync.WaitGroup{}
 
 	// Include the writeback in the client's configuration.
 	config_obj, err := makeDefaultConfigLoader().
@@ -49,74 +94,127 @@ func RunClient(
 		WithRequiredLogging().
 		WithFileLoader(*config_path).
 		WithWriteback().LoadAndValidate()
-	kingpin.FatalIfError(err, "Unable to load config file")
+	if err != nil {
+		return fmt.Errorf("Unable to load config file: %w", err)
+	}
+
+	// Report any errors from this function.
+	defer func() {
+		if err != nil {
+			logger := logging.GetLogger(config_obj, &logging.ClientComponent)
+			logger.Error("<red>runClientOnce Error:</> %v", err)
+		}
+	}()
 
 	// Make sure the config crypto is ok.
 	err = crypto_utils.VerifyConfig(config_obj)
 	if err != nil {
-		kingpin.FatalIfError(err, "Invalid config")
+		return fmt.Errorf("Invalid config: %w", err)
 	}
 
 	executor.SetTempfile(config_obj)
 
-	manager, err := crypto_client.NewClientCryptoManager(
-		config_obj, []byte(config_obj.Writeback.PrivateKey))
+	writeback, err := config.GetWriteback(config_obj.Client)
 	if err != nil {
-		kingpin.FatalIfError(err, "Unable to parse config file")
+		return err
+	}
+
+	manager, err := crypto_client.NewClientCryptoManager(
+		config_obj, []byte(writeback.PrivateKey))
+	if err != nil {
+		return err
 	}
 
 	// Start all the services
 	sm := services.NewServiceManager(ctx, config_obj)
 	defer sm.Close()
 
-	exe, err := executor.NewClientExecutor(ctx, config_obj)
+	// Start the nanny first so we are covered from here on.
+	err = sm.Start(executor.StartNannyService)
 	if err != nil {
-		kingpin.FatalIfError(err, "Can not create executor.")
+		return err
 	}
 
-	err = executor.StartServices(sm, manager.ClientId, exe)
+	j, _ := services.GetJournal()
+	if j == nil {
+		err := sm.Start(journal.StartJournalService)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Start the repository manager before we can handle any VQL
+	repo_manager, _ := services.GetRepositoryManager()
+	if repo_manager == nil {
+		err = sm.Start(repository.StartRepositoryManager)
+		if err != nil {
+			return err
+		}
+	}
+
+	exe, err := executor.NewClientExecutor(ctx, config_obj)
 	if err != nil {
-		kingpin.FatalIfError(err, "Can not start services.")
+		return fmt.Errorf("Can not create executor: %w", err)
 	}
 
 	// Now start the communicator so we can talk with the server.
 	comm, err := http_comms.NewHTTPCommunicator(
+		ctx,
 		config_obj,
 		manager,
 		exe,
 		config_obj.Client.ServerUrls,
-		func() { on_error(config_obj) },
+		func() { on_error(ctx, config_obj) },
 		utils.RealClock{},
 	)
-	kingpin.FatalIfError(err, "Can not create HTTPCommunicator.")
+	if err != nil {
+		return fmt.Errorf("Can not create HTTPCommunicator: %w", err)
+	}
 
-	wg.Add(1)
+	lwg.Add(1)
+	go comm.Run(ctx, lwg)
+
+	// Start services **after** the communicator is up in case
+	// services need to send messages.
+	err = executor.StartServices(sm, manager.ClientId, exe)
+	if err != nil {
+		return fmt.Errorf("Starting services: %w", err)
+	}
+
+	lwg.Add(1)
 	go func() {
-		defer wg.Done()
-
-		comm.Run(ctx)
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+		defer lwg.Done()
 		<-ctx.Done()
 
 		logger := logging.GetLogger(config_obj, &logging.ClientComponent)
 		logger.Info("<cyan>Interrupted!</> Shutting down\n")
 	}()
 
-	wg.Wait()
+	lwg.Wait()
+
+	return nil
+}
+
+func maybeCloseOutput() {
+	if *client_quiet_flag {
+		os.Stdout.Close()
+		os.Stderr.Close()
+	}
 }
 
 func init() {
 	command_handlers = append(command_handlers, func(command string) bool {
 		if command == client.FullCommand() {
+			maybeCloseOutput()
+
 			wg := &sync.WaitGroup{}
 			ctx, cancel := install_sig_handler()
 			defer cancel()
 
-			RunClient(ctx, wg, config_path)
+			FatalIfError(client, func() error {
+				wg.Add(1)
+				return RunClient(ctx, wg, config_path)
+			})
 
 			return true
 		}

@@ -12,12 +12,14 @@ import (
 	"www.velocidex.com/golang/velociraptor/datastore"
 	"www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/paths"
-	"www.velocidex.com/golang/velociraptor/search"
+	"www.velocidex.com/golang/velociraptor/services"
 	"www.velocidex.com/golang/velociraptor/utils"
 )
 
 var (
-	nonIndexingRegex = regexp.MustCompile(`^N\.[FH]\.`)
+	// Notebook ids that are not indexed. These are flow, hunt and
+	// event notebooks.
+	nonIndexingRegex = regexp.MustCompile(`^N\.[EFH]\.`)
 )
 
 func CheckNotebookAccess(
@@ -141,6 +143,11 @@ func UpdateShareIndex(
 	}
 
 	users := append([]string{notebook.Creator}, notebook.Collaborators...)
-	return search.SetSimpleIndex(config_obj, paths.NOTEBOOK_INDEX,
+	indexer, err := services.GetIndexer()
+	if err != nil {
+		return err
+	}
+
+	return indexer.SetSimpleIndex(config_obj, paths.NOTEBOOK_INDEX,
 		notebook.NotebookId, users)
 }

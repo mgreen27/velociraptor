@@ -14,6 +14,7 @@ import Button from 'react-bootstrap/Button';
 
 import api from '../core/api-service.js';
 import { formatColumns } from "../core/table.js";
+import NotebookUploads from '../notebooks/notebook-uploads.js';
 
 import NewCollectionWizard from './new-collection.js';
 import OfflineCollectorWizard from './offline-collector.js';
@@ -205,6 +206,37 @@ class FlowsList extends React.Component {
 
     componentDidMount = () => {
         this.source = axios.CancelToken.source();
+
+        let action = this.props.match && this.props.match.params &&
+            this.props.match.params.flow_id;
+
+        let client_id = this.props.match && this.props.match.params &&
+            this.props.match.params.client_id;
+
+        let name = this.props.match && this.props.match.params &&
+            this.props.match.params.tab;
+
+        if (_.isUndefined(client_id)) {
+            client_id = "server";
+        }
+
+        if (action === "new") {
+            let specs = {};
+            specs[name] = {};
+
+            let initial_flow = {
+                request: {
+                    client_id: client_id,
+                    artifacts: [name],
+                },
+            };
+            this.setState({
+                showNewFromRouterWizard: true,
+                client_id: client_id,
+                initial_flow: initial_flow,
+            });
+            this.props.history.push("/collected/" + client_id);
+        }
     }
 
     componentWillUnmount() {
@@ -240,6 +272,7 @@ class FlowsList extends React.Component {
             // Only disable wizards if the request was successful.
             this.setState({showWizard: false,
                            showOfflineWizard: false,
+                           showNewFromRouterWizard: false,
                            showCopyWizard: false});
         });
     }
@@ -400,6 +433,14 @@ class FlowsList extends React.Component {
                   baseFlow={this.props.selected_flow}
                   onCancel={(e) => this.setState({showCopyWizard: false})}
                   onResolve={this.setCollectionRequest} />
+        }
+
+              { this.state.showNewFromRouterWizard &&
+                <NewCollectionWizard
+                  client={this.state.client_id}
+                  baseFlow={this.state.initial_flow}
+                  onCancel={(e) => this.setState({showNewFromRouterWizard: false})}
+                  onResolve={this.setCollectionRequest} />
               }
 
               { this.state.showOfflineWizard &&
@@ -412,6 +453,12 @@ class FlowsList extends React.Component {
                 <DeleteNotebookDialog
                   notebook_id={"N." + selected_flow + "-" + client_id}
                   onClose={(e) => this.setState({showDeleteNotebook: false})}/>
+              }
+
+              { this.state.showNotebookUploadsDialog &&
+                <NotebookUploads
+                  notebook={{notebook_id: "N." + selected_flow + "-" + client_id}}
+                  closeDialog={(e) => this.setState({showNotebookUploadsDialog: false})}/>
               }
 
               { this.state.showExportNotebook &&
@@ -441,7 +488,7 @@ class FlowsList extends React.Component {
                     <FontAwesomeIcon icon="trash-alt"/>
                   </Button>
 
-                  { this.props.selected_flow.state === "RUNNING" &&
+                  { this.props.selected_flow.state !== "FINISHED" &&
                     <Button title="Cancel Artifact Collection"
                             onClick={this.cancelButtonClicked}
                             variant="default">
@@ -488,6 +535,12 @@ class FlowsList extends React.Component {
                             onClick={() => this.setState({showDeleteNotebook: true})}
                             variant="default">
                       <FontAwesomeIcon icon="trash"/>
+                    </Button>
+
+                    <Button title="Notebook Uploads"
+                            onClick={() => this.setState({showNotebookUploadsDialog: true})}
+                            variant="default">
+                      <FontAwesomeIcon icon="fa-file-download"/>
                     </Button>
 
                     <Button title="Export Notebook"

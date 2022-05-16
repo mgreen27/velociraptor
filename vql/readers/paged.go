@@ -35,7 +35,7 @@ import (
 	"time"
 
 	ntfs "www.velocidex.com/golang/go-ntfs/parser"
-	"www.velocidex.com/golang/velociraptor/glob"
+	"www.velocidex.com/golang/velociraptor/accessors"
 	"www.velocidex.com/golang/velociraptor/third_party/cache"
 	"www.velocidex.com/golang/velociraptor/utils"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
@@ -77,12 +77,13 @@ func (self *ReaderPool) Close() {
 type AccessorReader struct {
 	mu sync.Mutex
 
-	Accessor, File string
-	Scope          vfilter.Scope
+	Accessor string
+	File     *accessors.OSPath
+	Scope    vfilter.Scope
 
 	key string
 
-	reader       glob.ReadSeekCloser
+	reader       accessors.ReadSeekCloser
 	paged_reader *ntfs.PagedReader
 
 	created     time.Time
@@ -148,13 +149,13 @@ func (self *AccessorReader) ReadAt(buf []byte, offset int64) (int, error) {
 	// It is ok to close the reader at any time. We expect this
 	// and just re-open the underlying file when needed.
 	if self.reader == nil {
-		accessor, err := glob.GetAccessor(self.Accessor, self.Scope)
+		accessor, err := accessors.GetAccessor(self.Accessor, self.Scope)
 		if err != nil {
 			self.mu.Unlock()
 			return 0, err
 		}
 
-		reader, err := accessor.Open(self.File)
+		reader, err := accessor.OpenWithOSPath(self.File)
 		if err != nil {
 			self.mu.Unlock()
 			return 0, err
@@ -166,7 +167,7 @@ func (self *AccessorReader) ReadAt(buf []byte, offset int64) (int, error) {
 		}
 
 		paged_reader, err := ntfs.NewPagedReader(
-			utils.ReaderAtter{reader}, 1024*8, lru_size)
+			utils.ReaderAtter{Reader: reader}, 1024*8, lru_size)
 		if err != nil {
 			self.mu.Unlock()
 			return 0, err
@@ -215,10 +216,13 @@ func (self *AccessorReader) ReadAt(buf []byte, offset int64) (int, error) {
 	}
 
 	self.last_active = time.Now()
-	result, err := self.paged_reader.ReadAt(buf, offset)
+	paged_reader := self.paged_reader
 
+	// Reading from the paged reader may trigger another reader due to
+	// LRU so we release the lock before we do it.
 	self.mu.Unlock()
-	return result, err
+
+	return paged_reader.ReadAt(buf, offset)
 }
 
 func GetReaderPool(scope vfilter.Scope, lru_size int64) *ReaderPool {
@@ -251,14 +255,15 @@ func GetReaderPool(scope vfilter.Scope, lru_size int64) *ReaderPool {
 }
 
 func NewPagedReader(scope vfilter.Scope,
-	accessor, filename string,
+	accessor string,
+	filename *accessors.OSPath,
 	lru_size int) (*AccessorReader, error) {
 
 	// Get the reader pool from the scope.
 	pool := GetReaderPool(scope, 50)
 
 	// Try to get the reader from the pool
-	key := accessor + "://" + filename
+	key := accessor + "://" + filename.String()
 	value, pres := pool.lru.Get(key)
 	if pres {
 		return value.(*AccessorReader), nil

@@ -1,8 +1,9 @@
 package repository
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"io/fs"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -15,7 +16,8 @@ import (
 // Loads the global repository with artifacts from the frontend path
 // and the file store.
 func InitializeGlobalRepositoryFromFilesystem(
-	config_obj *config_proto.Config, global_repository *Repository) (*Repository, error) {
+	ctx context.Context, config_obj *config_proto.Config,
+	global_repository *Repository) (*Repository, error) {
 	if config_obj.Frontend == nil ||
 		config_obj.Frontend.ArtifactDefinitionsDirectory == "" {
 		return global_repository, nil
@@ -23,7 +25,7 @@ func InitializeGlobalRepositoryFromFilesystem(
 
 	logger := logging.GetLogger(config_obj, &logging.FrontendComponent)
 	err := filepath.Walk(config_obj.Frontend.ArtifactDefinitionsDirectory,
-		func(path string, finfo fs.FileInfo, err error) error {
+		func(path string, finfo os.FileInfo, err error) error {
 			if err != nil {
 				return fmt.Errorf(
 					"InitializeGlobalRepositoryFromFilesystem: %w", err)
@@ -32,6 +34,13 @@ func InitializeGlobalRepositoryFromFilesystem(
 			if !strings.HasSuffix(path, ".yaml") ||
 				finfo.IsDir() {
 				return nil
+			}
+
+			select {
+			case <-ctx.Done():
+				return errors.New("Cancelled")
+
+			default:
 			}
 
 			fd, err := os.Open(path)
@@ -48,7 +57,9 @@ func InitializeGlobalRepositoryFromFilesystem(
 			}
 
 			artifact_obj, err := global_repository.LoadYaml(
-				string(data), false /* validate */)
+				string(data),
+				false, /* validate */
+				false /* built_in */)
 			if err != nil {
 				logger.Info("Unable to load custom "+
 					"artifact %s: %v", path, err)

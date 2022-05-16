@@ -37,6 +37,7 @@
     type: string
     description: A string to scan
     required: true
+  category: windows
 - name: appcompatcache
   description: Parses the appcompatcache.
   type: Plugin
@@ -116,6 +117,7 @@
   - name: timeout
     type: uint64
     description: How long to wait for destructors to run (default 60 seconds).
+  category: basic
 - name: atoi
   description: Convert a string to an integer.
   type: Function
@@ -149,7 +151,7 @@
     type: string
     description: The accessor to use.
   - name: filename
-    type: string
+    type: accessors.OSPath
     description: The filename to parse.
     required: true
   - name: verbose
@@ -180,12 +182,15 @@
   type: Function
   args:
   - name: path
-    type: string
+    type: Any
     description: Extract directory name of path
     required: true
   - name: sep
     type: string
     description: Separator to use (default /)
+  - name: path_type
+    type: string
+    description: Type of path (e.g. 'windows,linux)
   category: basic
 - name: batch
   description: |
@@ -214,6 +219,7 @@
     type: StoredQuery
     description: Run this query over the item.
     required: true
+  category: basic
 - name: cache
   description: |
     Creates a cache object.
@@ -257,7 +263,7 @@
   description: |
     Cancels the flow.
 
-    This sends the client an immediate cacnellation message and stops
+    This sends the client an immediate cancellation message and stops
     the flow. It also removes any outstanding requests for the client
     if there are any.
   type: Function
@@ -273,7 +279,7 @@
     Collect certificate from the system trust store.
 
     This plugin uses the Windows APIs to fetch the certificates. You
-    migth also want to look at the `Windows.System.RootCAStore`
+    might also want to look at the `Windows.System.RootCAStore`
     artifact.
   type: Plugin
   category: windows
@@ -327,6 +333,7 @@
     description: A list of CIDR notation network ranges
     repeated: true
     required: true
+  category: server
 - name: client_delete
   description: |
     Delete all information related to a client from the filestore.
@@ -347,11 +354,11 @@
     Velociraptor maintains basic information about the client in the
     data store, such as its hostname, OS etc.
 
-    This information is refereshed each time the `Generic.Client.Info`
+    This information is refreshed each time the `Generic.Client.Info`
     artifact is collected from the endpoint so it can be out of
     date. This process is called "interrogation" of the endpoint.
 
-    You can refresh the entire fleet's datastore by schduling a
+    You can refresh the entire fleet's datastore by scheduling a
     `Generic.Client.Info` hunt.
   type: Function
   args:
@@ -378,6 +385,13 @@
 
     Client metadata is a set of free form key/value data (see
     client_metadata() function).
+
+    Example:
+
+    ```vql
+    SELECT client_set_metadata(ClientId="C.1234", Foo="Bar")
+    FROM scope()
+    ```
   type: Function
   args:
   - name: client_id
@@ -390,7 +404,7 @@
   args:
   - name: search
     type: string
-    description: 'Client search string. Can have the following prefixes: ''lable:'',
+    description: 'Client search string. Can have the following prefixes: ''label:'',
       ''host:'''
   - name: start
     type: uint64
@@ -416,7 +430,7 @@
     The following will generate an event every 10 seconds.
 
     ```sql
-    SELECT Sec FROM clock(period=10)
+    SELECT Second FROM clock(period=10)
     ```
 
     The `start` parameter can be used to schedule the plugin to start
@@ -473,6 +487,23 @@
   - name: level
     type: int64
     description: Compression level between 0 (no compression) and 9.
+  - name: ops_per_sec
+    type: int64
+    description: Rate limiting for collections (deprecated).
+  - name: cpu_limit
+    type: float64
+    description: Set query cpu_limit value
+  - name: iops_limit
+    type: float64
+    description: Set query iops_limit value
+  - name: progress_timeout
+    type: float64
+    description: If no progress is detected in this many seconds, we terminate the
+      query and output debugging information
+  - name: timeout
+    type: float64
+    description: Total amount of time in seconds, this collection will take. Collection
+      is cancelled when timeout is exceeded.
   category: plugin
 - name: collect_client
   description: |
@@ -496,7 +527,7 @@
     FROM scope()
     ```
 
-    Sometimes we have a numebr of artifacts that use the same
+    Sometimes we have a number of artifacts that use the same
     parameter name for different purposes. In that case we wish to
     specify precisely which artifact receives which parameter. This
     more complex way of specifying the collection using the `spec`
@@ -540,12 +571,22 @@
   - name: ops_per_sec
     type: float64
     description: Set query ops_per_sec value
+  - name: cpu_limit
+    type: float64
+    description: Set query cpu_limit value
+  - name: iops_limit
+    type: float64
+    description: Set query iops_limit value
   - name: max_rows
     type: uint64
     description: Max number of rows to fetch
   - name: max_bytes
     type: uint64
     description: Max number of bytes to upload
+  - name: urgent
+    type: bool
+    description: Set the collection as urgent - skips other queues collections on
+      the client.
   category: server
 - name: column_filter
   description: |
@@ -582,14 +623,16 @@
     type: string
     description: One of more regular expressions that will include columns.
     repeated: true
+  category: basic
 - name: combine
   description: Combine the output of several queries into the same result set.A convenience
     plugin acting like chain(async=TRUE).
   type: Plugin
+  category: event
 - name: commandline_split
   description: |
     Split a commandline into separate components following the windows
-    convensions.
+    conventions.
 
     Example:
     ```vql
@@ -607,6 +650,7 @@
   - name: bash_style
     type: bool
     description: Use bash rules (Uses Windows rules by default).
+  category: plugin
 - name: compress
   description: |
     Compress a file.
@@ -629,7 +673,7 @@
 
     On windows this uses the API to list active sockets.
   type: Plugin
-  category: client
+  category: plugin
 - name: copy
   description: |
     Copy a file.
@@ -766,6 +810,7 @@
     type: string
     description: Rc4 key (1-256bytes).
     required: true
+  category: plugin
 - name: dict
   description: |
     Construct a dict from arbitrary keyword args.
@@ -813,7 +858,7 @@
     newly inserted drives, or files that have been added to removable
     drives.
 
-    ```sql
+    ```vql
     LET removable_disks = SELECT Name AS Drive, Size
     FROM glob(globs="/*", accessor="file")
     WHERE Data.Description =~ "Removable"
@@ -827,6 +872,36 @@
       period=10)
       WHERE Diff = "added"
     ```
+
+    ### Example - waiting for process exit
+
+    Although `diff()` is primarily an event query it can also be
+    useful in regular client side VQL. For example we might need to
+    wait for a process to exit before continuing. The following query
+    blocks until the process list does not contain a process matching
+    the regex.
+
+    ```vql
+    SELECT * FROM diff(key="Name", period=1, query={
+       SELECT Name FROM pslist()
+       WHERE Name =~ ProcessRegex
+    })
+    WHERE Diff =~ "removed"
+    LIMIT 1
+    ```
+
+    This query:
+
+    1. Diff will list processes every second looking for process name
+       matching the regex.
+    2. When a process is added or removed, the diff plugin will emit a
+       row
+    3. The query is only interested in a removed process
+    4. After a single removed process is found the limit is reached
+       and the query exits.
+
+    Sometimes we need to wait for a subprocess to exist if it detaches
+    from the terminal immediately but does some work in the background.
   type: Plugin
   args:
   - name: query
@@ -851,12 +926,15 @@
   type: Function
   args:
   - name: path
-    type: string
+    type: Any
     description: Extract directory name of path
     required: true
   - name: sep
     type: string
     description: Separator to use (default /)
+  - name: path_type
+    type: string
+    description: Type of path (e.g. 'windows,linux)
   category: basic
 - name: dns
   description: |
@@ -890,7 +968,7 @@
     elastic. The query specified in `query` will be run and each row
     it emits will be uploaded as a separate event to Elastic.
 
-    You can either specify the elastic index explicitely using the
+    You can either specify the elastic index explicitly using the
     `index` parameter or provide an `_index` column in the query
     itself to send the row to a different index each time.
   type: Plugin
@@ -936,6 +1014,13 @@
   - name: pipeline
     type: string
     description: Pipeline for uploads
+  - name: disable_ssl_security
+    type: bool
+    description: Disable ssl certificate verifications.
+  - name: root_ca
+    type: string
+    description: As a better alternative to disable_ssl_security, allows root ca certs
+      to be added here.
   category: server
 - name: encode
   description: Encodes a string as as different type. Currently supported types include
@@ -949,6 +1034,13 @@
     type: string
     required: true
   category: basic
+- name: entropy
+  description: Calculates shannon scale entropy of a string.
+  type: Function
+  args:
+  - name: string
+    type: string
+    required: true
 - name: enumerate
   description: |
     Collect all the items in each group by bin.
@@ -1033,10 +1125,13 @@
     required: true
   - name: sep
     type: string
-    description: The serparator that will be used to split the stdout into rows.
+    description: The separator that will be used to split the stdout into rows.
   - name: length
     type: int64
     description: Size of buffer to capture output per row.
+  - name: env
+    type: LazyExpr
+    description: Environment variables to launch with.
   category: plugin
 - name: expand
   description: |
@@ -1082,6 +1177,7 @@
     type: string
     description: The type of favorite.
     required: true
+  category: server
 - name: favorites_save
   description: |
     Save a collection into the favorites.
@@ -1229,7 +1325,7 @@
   type: Function
   args:
   - name: list
-    type: string
+    type: Any
     description: A list of items to filter
     repeated: true
     required: true
@@ -1237,7 +1333,9 @@
     type: string
     description: A regex to test each item
     repeated: true
-    required: true
+  - name: condition
+    type: string
+    description: A VQL lambda to use to filter elements
   category: basic
 - name: flatten
   description: Flatten the columns in query. If any column repeats then we repeat
@@ -1331,10 +1429,10 @@
     description: Run this query for each row.
   - name: async
     type: bool
-    description: If set we run all queries asyncronously (implies workers=1000).
+    description: If set we run all queries asynchronously (implies workers=1000).
   - name: workers
     type: int64
-    description: Total number of asyncronous workers.
+    description: Total number of asynchronous workers.
   - name: column
     type: string
     description: If set we only extract the column from row.
@@ -1383,6 +1481,11 @@
     type: string
     description: The credentials to use
     required: true
+  - name: attributes
+    type: ordereddict.Dict
+    description: The publish attributes
+    required: true
+  category: server
 - name: generate
   description: |
     Create a named generator that receives rows from the query.
@@ -1423,6 +1526,7 @@
   - name: with_file_buffer
     type: bool
     description: Enable file buffering
+  category: basic
 - name: geoip
   description: |
     Lookup an IP Address using the MaxMind GeoIP database. You can get
@@ -1439,6 +1543,7 @@
     type: string
     description: Path to the MaxMind GeoIP Database.
     required: true
+  category: server
 - name: get
   description: |
     Gets the member field from item.
@@ -1553,6 +1658,40 @@
     directory - i.e. the glob pattern is appended to the root
     parameter.  The `root` parameter is useful if the directory name
     itself may contain glob characters.
+
+    ## Following symlinks
+
+    On Unix like operating systems symlinks are used
+    extensively. Symlinks complicate the job of the glob() plugin
+    because they break the assumption that filesystems are
+    trees. Instead a symlink may form a cycle or create very deep
+    directories within the filesystem.
+
+    By default glob() follows symlinks but also checks for cycles by
+    checking that a target of a symlink has not been seen before. You
+    can disable this behavior with `nosymlink=TRUE`
+
+    ## Setting a recursion callback
+
+    Sometimes it is useful to prevent glob() from recursing into a
+    directory. For example, if we know a directory can not possibly
+    contain a hit we can avoid descending into it at all. This more
+    efficient than simply eliminating the matching rows in the WHERE
+    clause.
+
+    You can provide a recursion callback (in the form of a VQL lambda
+    function) to let glob() know if it should be recursing a
+    directory. The glob() plugin will call the lambda with current
+    directory entry and if the lambda returns a `true` value will
+    recurse into it.
+
+    For example consider the following query which searches for pem
+    files in all directories other than /proc, /sys or /snap
+
+    ```vql
+    SELECT * FROM glob(globs='/**/*.pem',
+        recursion_callback="x=>NOT x.Name =~ '^/(proc|sys|snap)'")
+    ```
   type: Plugin
   args:
   - name: globs
@@ -1569,6 +1708,13 @@
   - name: nosymlink
     type: bool
     description: If set we do not follow symlinks.
+  - name: recursion_callback
+    type: string
+    description: A VQL function that determines if a directory should be recursed
+      (e.g. "x=>NOT x.Name =~ 'proc'").
+  - name: one_filesystem
+    type: bool
+    description: If set we do not follow links to other filesystems.
   category: plugin
 - name: grep
   description: |
@@ -1641,12 +1787,16 @@
   type: Function
   args:
   - name: path
-    type: string
+    type: accessors.OSPath
     description: Path to open and hash.
     required: true
   - name: accessor
     type: string
     description: The accessor to use
+  - name: hashselect
+    type: string
+    description: The hash function to use (MD5,SHA1,SHA256)
+    repeated: true
   category: plugin
 - name: http_client
   description: |
@@ -1702,7 +1852,7 @@
 
     You can use this plugin to download file contents by passing the
     `tempfile_extension` parameter. In this case this plugin will
-    create a new temp file with the speicfied extension, write the
+    create a new temp file with the specified extension, write the
     content of the HTTP request into it and then emit a row with
     `Content` being the name of the file. The file will be
     automatically removed when the query ends.
@@ -1763,6 +1913,10 @@
   - name: remove_last
     type: bool
     description: If set we delay removal as much as possible.
+  - name: root_ca
+    type: string
+    description: As a better alternative to disable_ssl_security, allows root ca certs
+      to be added here.
   category: plugin
 - name: humanize
   description: |
@@ -1801,8 +1955,8 @@
         description="A general hunt",
         artifacts='Windows.KapeFiles.Targets',
         spec=dict(`Windows.KapeFiles.Targets`=dict(
-            Device ='C:', VSSAnalysis='Y', KapeTriage='Y'),
-        expires=now() + 18000))
+            Device ='C:', VSSAnalysis='Y', KapeTriage='Y')),
+        expires=now() + 18000)
     FROM scope()
     ```
   type: Function
@@ -1826,6 +1980,12 @@
     type: uint64
     description: Set query timeout (default 10 min)
   - name: ops_per_sec
+    type: float64
+    description: Set query ops_per_sec value
+  - name: cpu_limit
+    type: float64
+    description: Set query ops_per_sec value
+  - name: iops_limit
     type: float64
     description: Set query ops_per_sec value
   - name: max_rows
@@ -1887,6 +2047,15 @@
     description: If a flow id is specified we do not create a new flow, but instead
       add this flow_id to the hunt.
   category: server
+- name: hunt_delete
+  description: 'Delete a hunt. '
+  type: Plugin
+  args:
+  - name: hunt_id
+    type: string
+    required: true
+  - name: really_do_it
+    type: bool
 - name: hunt_flows
   description: |
     Retrieve the flows launched by a hunt.
@@ -1960,9 +2129,9 @@
     type: Any
     required: true
   - name: then
-    type: LazyExpr
+    type: types.LazyAny
   - name: else
-    type: LazyExpr
+    type: types.LazyAny
   category: basic
 - name: if
   description: |
@@ -2023,6 +2192,7 @@
   - name: accessor
     type: string
     description: The accessor to use
+  category: server
 - name: info
   description: |
     Get information about the running host.
@@ -2133,7 +2303,52 @@
     type: Any
   category: basic
 - name: items
-  description: Enumerate all members of the item (similar to Pythons items() method.
+  description: |
+    Enumerate all members of the item (similar to Python's items() method).
+
+    This plugin allows iteration over dicts or queries.
+
+    ### Iterating dicts
+
+    If the item is a dict, then this plugin will iterate over its keys
+    and values producing two columns:
+
+    * The `_key` column is the dictionary key
+    * The `_value` column is the dictionary value
+
+    ### Iterating queries
+
+    For queries or arrays, the `items()` plugin will produce two columns:
+
+    * The `_key` column is the row index starting from 0
+    * The `_value` column is the row itself as a dict.
+
+    The `items()` query is useful to treat the results of another
+    query as a dict instead of a row. This is useful when the query
+    produces unpredictable columns or you need to operate over the
+    column names somehow.
+
+    For example:
+
+    ```vql
+    SELECT * FROM items(item={ SELECT * FROM info() })
+    ```
+
+    Produces:
+
+    ```json
+    [
+      {
+        "_key": 0,
+        "_value": {
+          "Hostname": "DESKTOP-BTI2T9T",
+          "Uptime": 20445,
+          "BootTime": 1641029930,
+          "Architecture": "amd64"
+        }
+      }
+    ]
+    ```
   type: Plugin
   args:
   - name: item
@@ -2212,7 +2427,7 @@
     description: If set use this key to cache the JS VM.
   category: plugin
 - name: killkillkill
-  description: Kills the client and forces a restart - this is very aggresive!
+  description: Kills the client and forces a restart - this is very aggressive!
   type: Function
   args:
   - name: client_id
@@ -2222,6 +2437,17 @@
 - name: label
   description: |
     Add the labels to the client. If op is 'remove' then remove these labels.
+
+    ### Example
+
+    The following query sets the MyLabel label on all hosts that last
+    connected from an IP address matching the regular expression (You
+    can also do a CIDR check using the `cidr_contains()` function)
+
+    ```vql
+    SELECT *, label(labels='MyLabel', op='set', client_id=client_id)
+    FROM clients() WHERE  last_ip =~ "127.+"
+    ```
   type: Function
   args:
   - name: client_id
@@ -2254,6 +2480,12 @@
     type: string
     description: Message to log.
     required: true
+  - name: dedup
+    type: int64
+    description: Suppress same message in this many seconds (default 60 sec).
+  - name: args
+    type: Any
+    description: An array of elements to apply into the format string.
   category: basic
 - name: lookupSID
   description: Get information about the SID.
@@ -2272,6 +2504,17 @@
     description: A string to lower
     required: true
   category: basic
+- name: lzxpress_decompress
+  description: |
+    Decompress an lzxpress blob.
+
+    This function is most useful when decoding prefetch files.
+  type: Function
+  args:
+  - name: data
+    type: string
+    description: The lzxpress stream (bytes)
+    required: true
 - name: magic
   description: |
     Identify a file using magic rules.
@@ -2322,13 +2565,14 @@
   - name: magic
     type: string
     description: Additional magic to load
+  category: plugin
 - name: mail
   description: Send Email to a remote server.
   type: Plugin
   args:
   - name: to
     type: string
-    description: Receipient of the mail
+    description: Recipient of the mail
     repeated: true
     required: true
   - name: from
@@ -2384,7 +2628,49 @@
     required: true
   category: basic
 - name: memoize
-  description: Memoize a query into memory.
+  description: |
+    Memoize a query into memory.
+
+    Memoizing a query means to cache the results of the query so they
+    can be accessed quickly.
+
+    Consider the following query:
+
+    ```vql
+    LET ProcessDetails(ProcessPid) = SELECT Name, Pid, Ppid FROM pslist()
+      WHERE Pid=ProcessPid
+    ```
+
+    This query retrieves the process details for any Pid such as the
+    Name, Pid and parent Pid.
+
+    While this query works, imagine having to use it in a large query
+    to resolve many different processes. Each time the function is
+    called the pslist() plugin is run over all processes and the
+    correct process is selected - this can lead to thousands of
+    pslist() executions!
+
+    We can solve this by memoizing the results of the query -
+    i.e. storing them in memory and retrieving a single row based on a
+    key.
+
+    ```vql
+    LET m <= memoize(query={
+       SELECT str(str=Pid) AS Key, Name, Pid, Ppid FROM pslist()
+    }, key='Key')
+    ```
+
+    The `memoize()` function looks like a `dict()` and when accessed
+    will automatically run the query once and cache its rows. The Key
+    column of the query is used as the key of the dict.
+
+    You can access the cache using the `get()` function or the `.`
+    operator. If the key matches the entire row is retrieved:
+
+    ```vql
+    SELECT get(item=m, field=str(str=Pid)).Name AS ProcessName
+    FROM source()
+    ```
   type: Function
   args:
   - name: query
@@ -2433,7 +2719,7 @@
     type: Any
     description: The artifact to mock
   - name: results
-    type: Any
+    type: LazyExpr
     description: The result to return
     required: true
   category: utils
@@ -2491,10 +2777,10 @@
     description: Stop end events reach this time (event sources).
   - name: notebook_id
     type: string
-    description: The notebook to read from (shoud also include cell id)
+    description: The notebook to read from (should also include cell id)
   - name: notebook_cell_id
     type: string
-    description: The notebook cell read from (shoud also include notebook id)
+    description: The notebook cell read from (should also include notebook id)
   - name: notebook_cell_table
     type: int64
     description: A notebook cell can have multiple tables.)
@@ -2505,6 +2791,31 @@
     type: int64
     description: Maximum number of clients to fetch (default unlimited)'
   category: server
+- name: netcat
+  description: Make a tcp connection and read data from a socket.
+  type: Plugin
+  args:
+  - name: address
+    type: string
+    description: The address to connect to (can be a file in case of a unix domain
+      socket)
+    required: true
+  - name: type
+    type: string
+    description: Can be tcp or unix (default TCP)
+  - name: send
+    type: string
+    description: Data to send before reading
+  - name: sep
+    type: string
+    description: The separator that will be used to split (default - line feed)
+  - name: chunk_size
+    type: int
+    description: Read input with this chunk size (default 64kb)
+  - name: retry
+    type: int
+    description: Seconds to wait before retry - default 0 - do not retry
+  category: plugin
 - name: netstat
   description: Collect network information.
   type: Plugin
@@ -2550,7 +2861,36 @@
     description: Maximum size of file we load into memory.
   category: parsers
 - name: parallelize
-  description: Runs query on result batches in parallel.
+  description: |
+    Runs query on result batches in parallel.
+
+    Normally the source() plugin reads result sets from disk in
+    series. This is fine when the result set is not too large but when
+    we need to filter a lot of rows at the same time it is better to
+    use all cores by reading and filtering in parallel.
+
+    The `parallelize()` plugin is a parallel version of `source()`
+    which breaks result sets into batches and applies a query over
+    each batch in parallel. If you have a multi threaded machine, it
+    will be a lot faster.
+
+    The query passed to parallelize() will receive a special scope in
+    which the `source()` plugin will returns results from a small
+    batch of the total. The size of this batch is controlled by the
+    `batch` parameter.
+
+    This is especially useful when we need to filter rows from a hunt
+    - each client's result set will be filtered in parallel on a
+    different core.
+
+    ### Example:
+
+    ```vql
+    SELECT * FROM parallelize(hunt_id=HuntId, artifact=ArtifactName, query={
+       SELECT * FROM source()
+       WHERE FullPath =~ "XYZ"
+    })
+    ```
   type: Plugin
   args:
   - name: query
@@ -2580,10 +2920,10 @@
     description: Stop end events reach this time (event sources).
   - name: notebook_id
     type: string
-    description: The notebook to read from (shoud also include cell id)
+    description: The notebook to read from (should also include cell id)
   - name: notebook_cell_id
     type: string
-    description: The notebook cell read from (shoud also include notebook id)
+    description: The notebook cell read from (should also include notebook id)
   - name: notebook_cell_table
     type: int64
     description: A notebook cell can have multiple tables.)
@@ -2612,7 +2952,7 @@
   category: parsers
 - name: parse_binary
   description: |
-    Parse a binary file into a datastructure using a profile.
+    Parse a binary file into a data structure using a profile.
 
     This plugin extract binary data from strings. It works by applying
     a profile to the binary string and generating an object from
@@ -2628,14 +2968,14 @@
     ]
     ```
 
-    The profile is compiled and overlayed on top of the offset specified,
+    The profile is compiled and overlaid on top of the offset specified,
     then the object is emitted with its required fields.
 
     You can read more about profiles here https://github.com/Velocidex/vtypes
   type: Function
   args:
   - name: filename
-    type: string
+    type: accessors.OSPath
     description: Binary file to open.
     required: true
   - name: accessor
@@ -2696,7 +3036,14 @@
     description: If unset the first row is headers
   - name: separator
     type: string
-    description: Comma separator
+    description: Comma separator (default ',')
+  - name: comment
+    type: string
+    description: The single character that should be considered a comment
+  - name: columns
+    type: string
+    description: The columns to use
+    repeated: true
   category: parsers
 - name: parse_ese
   description: Opens an ESE file and dump a table.
@@ -2723,6 +3070,7 @@
   - name: accessor
     type: string
     description: The accessor to use.
+  category: parsers
 - name: parse_evtx
   description: |
     Parses events from an EVTX file.
@@ -2837,26 +3185,72 @@
     description: Maximum size of line buffer.
   category: parsers
 - name: parse_mft
-  description: Scan the $MFT from an NTFS volume.
+  description: |
+    Scan the $MFT from an NTFS volume.
+
+    This plugin expect an $MFT file to operate on. For example, it is
+    commonly used with the 'ntfs' accessor which opens the local raw
+    device to provide access to the $MFT
+
+    ```vql
+    SELECT * FROM parse_mft(filename="C:/$MFT", accessor="ntfs")
+    ```
+
+    For parsing from an image file, you can extract the $MFT file
+    using the raw_ntfs accessor (which operates on images).
+
+    ```vql
+    SELECT * FROM parse_mft(
+         filename=pathspec(
+           Path="$MFT",
+           DelegateAccessor="file",
+           DelegatePath='ntfs_image.dd'),
+         accessor="raw_ntfs")
+    ```
   type: Plugin
   args:
   - name: filename
     type: string
-    description: A list of event log files to parse.
+    description: The MFT file.
     required: true
   - name: accessor
     type: string
     description: The accessor to use.
   category: parsers
 - name: parse_ntfs
-  description: Parse an NTFS image file.
+  description: |
+    Parse specific inodes from an NTFS image file or the raw device.
+
+    This function retrieves more information about a specific MFT
+    entry including listing all its attributes.
+
+    It can either operate on an image file or the raw device (on
+    windows).
+
+    ## Example:
+
+    ```vql
+    SELECT parse_ntfs(
+        filename='ntfs_image.dd',
+        inode="46-128-0")
+    FROM scope()
+    ```
+
+    You can get the MFT entry number from `parse_mft()` or from the
+    Data attribute of a `glob()` using the `ntfs` accessor.
   type: Function
   args:
   - name: device
     type: string
-    description: The device file to open. This may be a full path - we will figure
-      out the device automatically.
-    required: true
+    description: The device file to open. This may be a full path for example C:\Windows
+      - we will figure out the device automatically.
+  - name: filename
+    type: accessors.OSPath
+    description: A raw image to open. You can also provide the accessor if using a
+      raw image file.
+  - name: accessor
+    type: string
+    description: The accessor to use.
   - name: inode
     type: string
     description: The MFT entry to parse in inode notation (5-144-1).
@@ -2868,14 +3262,24 @@
     description: The offset to the MFT entry to parse.
   category: parsers
 - name: parse_ntfs_i30
-  description: Scan the $I30 stream from an NTFS MFT entry.
+  description: |
+    Scan the $I30 stream from an NTFS MFT entry.
+
+    This is similar in use to the parse_ntfs() function but parses the
+    $I30 stream.
   type: Plugin
   args:
   - name: device
     type: string
-    description: The device file to open. This may be a full path - we will figure
-      out the device automatically.
-    required: true
+    description: The device file to open. This may be a full path for example C:\Windows
+      - we will figure out the device automatically.
+  - name: filename
+    type: accessors.OSPath
+    description: A raw image to open. You can also provide the accessor if using a
+      raw image file.
+  - name: accessor
+    type: string
+    description: The accessor to use.
   - name: inode
     type: string
     description: The MFT entry to parse in inode notation (5-144-1).
@@ -2892,9 +3296,15 @@
   args:
   - name: device
     type: string
-    description: The device file to open. This may be a full path - we will figure
-      out the device automatically.
-    required: true
+    description: The device file to open. This may be a full path for example C:\Windows
+      - we will figure out the device automatically.
+  - name: filename
+    type: accessors.OSPath
+    description: A raw image to open. You can also provide the accessor if using a
+      raw image file.
+  - name: accessor
+    type: string
+    description: The accessor to use.
   - name: inode
     type: string
     description: The MFT entry to parse in inode notation (5-144-1).
@@ -2910,7 +3320,7 @@
   type: Function
   args:
   - name: file
-    type: string
+    type: accessors.OSPath
     description: The PE file to open.
     required: true
   - name: accessor
@@ -2925,6 +3335,7 @@
     type: string
     description: PKCS7 DER encoded string.
     required: true
+  category: parsers
 - name: parse_records_with_regex
   description: |
     Parses a file with a set of regexp and yields matches as records.  The
@@ -2972,7 +3383,7 @@
      /etc/update-motd.d/80-livepatch 1a3172ffaa815d12b58648f117ffb67e
     Description: management tools for Ubuntu Advantage
      Ubuntu Advantage is the professional package of tooling, technology
-     and expertise from Canonical, helping organisations around the world
+     and expertise from Canonical, helping organizations around the world
      manage their Ubuntu deployments.
      .
      Subscribers to Ubuntu Advantage will find helpful tools for accessing
@@ -3049,9 +3460,12 @@
   type: Plugin
   args:
   - name: device
-    type: string
+    type: accessors.OSPath
     description: The device file to open.
     required: true
+  - name: accessor
+    type: string
+    description: The accessor to use.
   - name: start_offset
     type: int64
     description: The starting offset of the first USN record to parse.
@@ -3064,6 +3478,7 @@
     type: string
     description: X509 DER encoded string.
     required: true
+  category: parsers
 - name: parse_xml
   description: |
     Parse an XML document into a dict like object.
@@ -3088,8 +3503,9 @@
   - name: accessor
     type: string
     description: File accessor
+  category: parsers
 - name: partitions
-  description: List all partititions
+  description: List all partitions
   type: Plugin
   args:
   - name: all
@@ -3153,13 +3569,16 @@
   type: Function
   args:
   - name: components
-    type: string
+    type: Any
     description: Path components to join.
     repeated: true
     required: true
   - name: sep
     type: string
     description: Separator to use (default /)
+  - name: path_type
+    type: string
+    description: Type of path (e.g. 'windows')
   category: basic
 - name: path_split
   description: Split a path into components. Note this is more complex than just split()
@@ -3167,10 +3586,75 @@
   type: Function
   args:
   - name: path
-    type: string
+    type: Any
     description: Path to split into components.
     required: true
+  - name: path_type
+    type: string
+    description: Type of path (e.g. 'windows')
   category: basic
+- name: pathspec
+  description: Create a structured path spec to pass to certain accessors.
+  type: Function
+  args:
+  - name: DelegateAccessor
+    type: string
+    description: An accessor to use.
+  - name: DelegatePath
+    type: string
+    description: A delegate to pass to the accessor.
+  - name: Path
+    type: Any
+    description: A path to open.
+  - name: parse
+    type: string
+    description: Alternatively parse the pathspec from this string.
+  - name: path_type
+    type: string
+    description: Type of path this is (windows,linux,registry,ntfs).
+  category: plugin
+- name: pipe
+  description: |
+    A pipe allows plugins that use files to read data from a vql
+    query. This is needed to be able to use the "pipe" accessor.
+
+    ### Example
+
+    In the following example we create a pipe from a query which
+    reads a log file line by line. Each line is being transformed by
+    a regex and potentially filtered (perhaps to fix up buggy CSV
+    implementations that generated a bad CSV).
+
+    The pipe is then fed into the parse_csv() plugin to parse each
+    line as a csv file.
+
+    ```vql
+    LET MyPipe = pipe(query={
+        SELECT regex_replace(
+          re='''^(\d{4}-\d{2}-\d{2}) (\d{2}:)''',
+          replace='''${1}T${2}''', source=Line) AS Line
+        FROM parse_lines(filename=IISPath)
+        WHERE NOT Line =~ "^#"
+      }, sep="\n")
+
+    SELECT * FROM parse_csv(
+       columns=Columns, separator=" ",
+       filename="MyPipe", accessor="pipe")
+    ```
+  type: Function
+  args:
+  - name: name
+    type: string
+    description: Name to call the pipe
+  - name: query
+    type: StoredQuery
+    description: Run this query to generator data - the first column will be appended
+      to pipe data.
+  - name: sep
+    type: string
+    description: 'The separator that will be used to split each read (default: no
+      separator will be used)'
+  category: plugin
 - name: plist
   description: Parse plist file
   type: Function
@@ -3294,7 +3778,7 @@
   - name: duration
     type: int64
     description: Duration of samples (default 30 sec)
-  category: plugins
+  category: plugin
 - name: pslist
   description: |
     Enumerate running processes.
@@ -3323,12 +3807,22 @@
   type: Plugin
   args:
   - name: query
-    type: string
+    type: Any
     description: A VQL Query to parse and execute.
     required: true
   - name: env
     type: ordereddict.Dict
     description: A dict of args to insert into the scope.
+  - name: cpu_limit
+    type: float64
+    description: Average CPU usage in percent of a core.
+  - name: iops_limit
+    type: float64
+    description: Average IOPs to target.
+  - name: progress_timeout
+    type: float64
+    description: If no progress is detected in this many seconds, we terminate the
+      query and output debugging information
 - name: rand
   description: Selects a random number.
   type: Function
@@ -3343,16 +3837,15 @@
   args:
   - name: start
     type: int64
-    description: Start index (0 based)
-    required: true
+    description: Start index (0 based - default 0)
   - name: end
     type: int64
     description: End index (0 based)
     required: true
   - name: step
     type: int64
-    description: End index (0 based)
-    required: true
+    description: Step (default 1)
+  category: basic
 - name: rate
   description: |
     Calculates the rate (derivative) between two quantities.
@@ -3438,6 +3931,9 @@
   - name: accessor
     type: string
     description: The accessor to use.
+  - name: root
+    type: string
+    description: The root directory to glob from (default '/').
   category: windows
 - name: reg_rm_key
   description: Removes a key and all its values from the registry.
@@ -3447,6 +3943,7 @@
     type: string
     description: Registry key path.
     required: true
+  category: plugin
 - name: reg_rm_value
   description: Removes a value in the registry.
   type: Function
@@ -3455,6 +3952,7 @@
     type: string
     description: Registry value path.
     required: true
+  category: plugin
 - name: reg_set_value
   description: Set a value in the registry.
   type: Function
@@ -3474,6 +3972,7 @@
   - name: create
     type: bool
     description: Set to create missing intermediate keys
+  category: plugin
 - name: regex_replace
   description: Search and replace a string with a regexp. Note you can use $1 to replace
     the capture string.
@@ -3516,6 +4015,16 @@
   - name: key
     type: string
     description: A key for caching
+  category: basic
+- name: rekey
+  description: Causes the client to rekey and regenerate a new client ID. DANGEROUS!
+    This will change the client's identity and it will appear as a new client in the
+    GUI.
+  type: Function
+  args:
+  - name: wait
+    type: int64
+    description: Wait this long before rekeying the client.
 - name: relpath
   description: Return the relative path of .
   type: Function
@@ -3531,6 +4040,22 @@
   - name: sep
     type: string
     description: Separator to use (default native)
+  category: basic
+- name: remap
+  description: Apply a remapping configuration to the root scope.
+  type: Function
+  args:
+  - name: config
+    type: string
+    description: A Valid remapping configuration in YAML format
+    required: true
+  - name: copy
+    type: string
+    description: Accessors to copy to the new scope
+    repeated: true
+  - name: clear
+    type: bool
+    description: If set we clear all accessors from the device manager
 - name: rm
   description: Remove a file from the filesystem using the API.
   type: Function
@@ -3539,6 +4064,7 @@
     type: string
     description: Filename to remove.
     required: true
+  category: plugin
 - name: rm_client_monitoring
   description: Remove an artifact from the client monitoring table.
   type: Function
@@ -3625,6 +4151,7 @@
     type: ordereddict.Dict
     description: The row to send to the artifact
     required: true
+  category: event
 - name: sequence
   description: |
     Combines the output of many queries into an in memory fifo. After
@@ -3668,6 +4195,7 @@
   - name: max_age
     type: int64
     description: Maximum number of seconds to hold rows in the sequence.
+  category: experimental
 - name: serialize
   description: Encode an object as a string (csv or json).
   type: Function
@@ -3678,7 +4206,7 @@
     required: true
   - name: format
     type: string
-    description: Encoding format (csv,json)
+    description: Encoding format (csv,json,yaml,hex,base64)
   category: basic
 - name: server_metadata
   description: Returns client metadata from the datastore. Client metadata is a set
@@ -3690,13 +4218,21 @@
     required: true
   category: server
 - name: server_set_metadata
-  description: Sets client metadata. Client metadata is a set of free form key/value
-    data
+  description: |
+    Sets server metadata. Server metadata is a set of free form
+    key/value data, usually used for configuration of artifacts.
+
+    Example:
+
+    ```vql
+    SELECT server_set_metadata(`Slack Token`="X12233")
+    FROM scope()
+    ```
   type: Function
   args:
-  - name: client_id
-    type: string
-    required: true
+  - name: metadata
+    type: ordereddict.Dict
+    description: A dict containing metadata. If not specified we use kwargs.
   category: server
 - name: set
   description: Sets the member field of the item. If item is omitted sets the scope.
@@ -3711,6 +4247,7 @@
   - name: value
     type: Any
     required: true
+  category: basic
 - name: set_client_monitoring
   description: Sets the current client monitoring state.
   type: Function
@@ -3756,6 +4293,7 @@
     type: uint64
     description: End index (0 based)
     required: true
+  category: basic
 - name: source
   description: |
     Retrieve rows from an artifact's source.
@@ -3793,10 +4331,10 @@
     description: Stop end events reach this time (event sources).
   - name: notebook_id
     type: string
-    description: The notebook to read from (shoud also include cell id)
+    description: The notebook to read from (should also include cell id)
   - name: notebook_cell_id
     type: string
-    description: The notebook cell read from (shoud also include notebook id)
+    description: The notebook cell read from (should also include notebook id)
   - name: notebook_cell_table
     type: int64
     description: A notebook cell can have multiple tables.)
@@ -3817,8 +4355,10 @@
     required: true
   - name: sep
     type: string
-    description: The serparator that will be used to split
-    required: true
+    description: The separator that will be used to split
+  - name: sep_string
+    type: string
+    description: The separator as string that will be used to split
   category: basic
 - name: split_records
   description: Parses files by splitting lines into records.
@@ -3881,6 +4421,10 @@
   - name: skip_verify
     type: bool
     description: 'Skip SSL verification(default: False).'
+  - name: root_ca
+    type: string
+    description: As a better alternative to disable_ssl_security, allows root ca certs
+      to be added here.
   - name: wait_time
     type: int64
     description: Batch splunk upload this long (2 sec).
@@ -3907,6 +4451,7 @@
     required: true
   - name: args
     type: Any
+  category: plugin
 - name: sqlite
   description: Opens an SQLite file and run a query against it.
   type: Plugin
@@ -3976,6 +4521,7 @@
   - name: globals
     type: Any
     description: Dictionary of values to feed into Starlark environment
+  category: parsers
 - name: stat
   description: Get file information. Unlike glob() this does not support wildcards.
   type: Plugin
@@ -4024,6 +4570,7 @@
   - name: end
     type: int
     description: End index of substring
+  category: basic
 - name: sum
   description: Sums the items.
   type: Function
@@ -4031,6 +4578,7 @@
   - name: item
     type: int64
     required: true
+  category: basic
 - name: switch
   description: Executes each query. The first query to return any rows will be emitted.
   type: Plugin
@@ -4084,6 +4632,7 @@
   - name: notebook_id
     type: string
     description: The notebook ID the timeline is stored in.
+  category: server
 - name: timeline_add
   description: Add a new query to a timeline.
   type: Function
@@ -4107,6 +4656,7 @@
   - name: notebook_id
     type: string
     description: The notebook ID the timeline is stored in.
+  category: server
 - name: timestamp
   description: |
     Convert from different types to a time.Time.
@@ -4180,7 +4730,7 @@
     description: A default timezone (UTC)
   - name: format
     type: string
-    description: A format specifier as per Golangs time.Parse
+    description: A format specifier as per the Golang time.Parse
   category: basic
 - name: to_dict
   description: |
@@ -4252,6 +4802,7 @@
   - name: string
     type: string
     description: Hex string to decode
+  category: basic
 - name: unzip
   description: Unzips a file into a directory
   type: Plugin
@@ -4270,6 +4821,7 @@
     type: string
     description: Where to unzip to
     required: true
+  category: basic
 - name: upcase
   type: Function
   args:
@@ -4365,6 +4917,7 @@
   - name: btime
     type: Any
     description: Birth time to set the output file.
+  category: server
 - name: upload_gcs
   description: Upload files to GCS.
   type: Function
@@ -4440,15 +4993,15 @@
     required: true
   - name: name
     type: string
-    description: The name of the file that should be stored on the server
+    description: The name of the file that should be stored on the server (may contain
+      the path)
   - name: user
     type: string
     description: The username to connect to the endpoint with
     required: true
   - name: path
     type: string
-    description: Path on server to upload file to
-    required: true
+    description: Path on server to upload file to (will be prepended to name)
   - name: accessor
     type: string
     description: The accessor to use
@@ -4458,7 +5011,7 @@
     required: true
   - name: endpoint
     type: string
-    description: The Endpoint to use
+    description: The Endpoint to use including port number (e.g. 192.168.1.1:22 )
     required: true
   - name: hostkey
     type: string
@@ -4559,6 +5112,7 @@
     required: true
   - name: password
     type: string
+  category: server
 - name: user_delete
   description: Deletes a user from the server.
   type: Function
@@ -4566,6 +5120,7 @@
   - name: user
     type: string
     required: true
+  category: server
 - name: users
   description: Display information about workstation local users. This is obtained
     through the NetUserEnum() API.
@@ -4666,7 +5221,14 @@
     description: If unset the first row is headers
   - name: separator
     type: string
-    description: Comma separator
+    description: Comma separator (default ',')
+  - name: comment
+    type: string
+    description: The single character that should be considered a comment
+  - name: columns
+    type: string
+    description: The columns to use
+    repeated: true
   category: event
 - name: watch_etw
   description: Watch for events from an ETW provider.
@@ -4749,13 +5311,14 @@
   type: Plugin
   args:
   - name: device
-    type: string
+    type: accessors.OSPath
     description: The device file to open.
     required: true
   category: event
 - name: whoami
   description: Returns the username that is running the query.
   type: Function
+  category: plugin
 - name: winobj
   description: Enumerate The Windows Object Manager namespace.
   type: Plugin
@@ -4831,6 +5394,7 @@
     type: string
     description: Xor key.
     required: true
+  category: parsers
 - name: yara
   description: |
     Scan files using yara rules.
@@ -4884,8 +5448,8 @@
     When the rule is provided in the above form, the plugin will
     automatically generate a yara rule which matches any of the specified
     keywords. The specification before the `:` means the same thing as the
-    yara DSL and the following combinations are supported `wide`, `wide
-    ascii`, `wide nocase`, `wide nocase ascii`.
+    yara DSL and the following combinations are supported `wide`,
+    `wide ascii`, `wide nocase`, `wide nocase ascii`.
 
 
     {{% notice note %}}
@@ -4901,13 +5465,13 @@
     description: Yara rules in the yara DSL.
     required: true
   - name: files
-    type: string
+    type: Any
     description: The list of files to scan.
     repeated: true
     required: true
   - name: accessor
     type: string
-    description: Accessor (e.g. NTFS)
+    description: Accessor (e.g. ntfs,file)
   - name: context
     type: int
     description: How many bytes to include around each hit

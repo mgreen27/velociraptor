@@ -5,8 +5,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ReneKroon/ttlcache/v2"
 	"github.com/Velocidex/ordereddict"
+	"github.com/Velocidex/ttlcache/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	api_proto "www.velocidex.com/golang/velociraptor/api/proto"
@@ -14,7 +14,6 @@ import (
 	"www.velocidex.com/golang/velociraptor/datastore"
 	"www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/paths"
-	"www.velocidex.com/golang/velociraptor/search"
 	"www.velocidex.com/golang/velociraptor/services"
 	"www.velocidex.com/golang/velociraptor/utils"
 )
@@ -84,12 +83,17 @@ func (self *Labeler) SetClock(c utils.Clock) {
 	self.Clock = c
 }
 
+// Assumption: We hold the lock entering this function.
 func (self *Labeler) getRecord(
 	config_obj *config_proto.Config, client_id string) (*CachedLabels, error) {
 	cached_any, err := self.lru.Get(client_id)
 	if err == nil {
 		return cached_any.(*CachedLabels), nil
 	}
+
+	// We did not hit the lru - fetch from the datastore but we dont
+	// need to hold the lock for that.
+	self.mu.Unlock()
 
 	db, err := datastore.GetDB(config_obj)
 	if err != nil {
@@ -105,8 +109,10 @@ func (self *Labeler) getRecord(
 	// instead of a dedicated record. This used to be migration code
 	// that populated labels from the index, but this is not necessary
 	// since the labels client record is the authoritative source.
-	self.preCalculatedLowCase(cached)
+	preCalculatedLowCase(cached)
 
+	// Now set back to the lru with lock
+	self.mu.Lock()
 	self.lru.Set(client_id, cached)
 
 	return cached, nil
@@ -114,7 +120,7 @@ func (self *Labeler) getRecord(
 
 // Reset internal lower cased labels from the full labels. (Lower
 // cased labels are used for quick label comparisons).
-func (self *Labeler) preCalculatedLowCase(cached *CachedLabels) {
+func preCalculatedLowCase(cached *CachedLabels) {
 	cached.lower_labels = nil
 	for _, label := range cached.record.Label {
 		cached.lower_labels = append(cached.lower_labels,
@@ -172,13 +178,13 @@ func (self *Labeler) notifyClient(
 		return err
 	}
 
-	return journal.PushRowsToArtifact(config_obj,
-		[]*ordereddict.Dict{
-			ordereddict.NewDict().
-				Set("client_id", client_id).
-				Set("Operation", operation).
-				Set("Label", new_label),
-		}, "Server.Internal.Label", client_id, "")
+	journal.PushRowsToArtifactAsync(config_obj,
+		ordereddict.NewDict().
+			Set("client_id", client_id).
+			Set("Operation", operation).
+			Set("Label", new_label),
+		"Server.Internal.Label")
+	return nil
 }
 
 func (self *Labeler) SetClientLabel(
@@ -208,8 +214,8 @@ func (self *Labeler) SetClientLabel(
 	}
 
 	client_path_manager := paths.NewClientPathManager(client_id)
-	err = db.SetSubject(config_obj,
-		client_path_manager.Labels(), cached.record)
+	err = db.SetSubjectWithCompletion(config_obj,
+		client_path_manager.Labels(), cached.record, nil)
 	if err != nil {
 		return err
 	}
@@ -222,8 +228,13 @@ func (self *Labeler) SetClientLabel(
 		return err
 	}
 
-	// Also adjust the index so client searches work.
-	return search.SetIndex(config_obj, client_id, "label:"+new_label)
+	// Also adjust the index so client searches work. If there is no
+	// indexing services it is not an error.
+	indexer, err := services.GetIndexer()
+	if err == nil {
+		return indexer.SetIndex(client_id, "label:"+new_label)
+	}
+	return nil
 }
 
 func (self *Labeler) RemoveClientLabel(
@@ -248,7 +259,7 @@ func (self *Labeler) RemoveClientLabel(
 	cached.record.Timestamp = uint64(self.Clock.Now().UnixNano())
 	cached.record.Label = new_labels
 
-	self.preCalculatedLowCase(cached)
+	preCalculatedLowCase(cached)
 
 	// Store the label in the datastore.
 	db, err := datastore.GetDB(config_obj)
@@ -257,8 +268,8 @@ func (self *Labeler) RemoveClientLabel(
 	}
 
 	client_path_manager := paths.NewClientPathManager(client_id)
-	err = db.SetSubject(config_obj,
-		client_path_manager.Labels(), cached.record)
+	err = db.SetSubjectWithCompletion(config_obj,
+		client_path_manager.Labels(), cached.record, nil)
 	if err != nil {
 		return err
 	}
@@ -272,7 +283,12 @@ func (self *Labeler) RemoveClientLabel(
 	}
 
 	// Also adjust the index.
-	return search.UnsetIndex(config_obj, client_id, "label:"+new_label)
+	indexer, err := services.GetIndexer()
+	if err != nil {
+		return err
+	}
+
+	return indexer.UnsetIndex(client_id, "label:"+new_label)
 }
 
 func (self *Labeler) GetClientLabels(
@@ -328,7 +344,8 @@ func (self *Labeler) Start(ctx context.Context,
 		return err
 	}
 
-	events, cancel := journal.Watch(ctx, "Server.Internal.Label")
+	events, cancel := journal.Watch(
+		ctx, "Server.Internal.Label", "Labeler")
 
 	wg.Add(1)
 	go func() {

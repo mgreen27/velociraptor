@@ -130,7 +130,6 @@ import (
 	api_proto "www.velocidex.com/golang/velociraptor/api/proto"
 	"www.velocidex.com/golang/velociraptor/artifacts"
 	artifacts_proto "www.velocidex.com/golang/velociraptor/artifacts/proto"
-	"www.velocidex.com/golang/velociraptor/clients"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/constants"
 	crypto_proto "www.velocidex.com/golang/velociraptor/crypto/proto"
@@ -195,7 +194,7 @@ func (self *Launcher) CompileCollectorArgs(
 	// = 10) and artifact B (with max_rows = 20), then the
 	// collection will have max_rows = 20.
 	var max_rows, max_upload_bytes, timeout uint64
-	var ops_per_sec float32
+	var ops_per_sec, cpu_limit, iops_limit float32
 
 	for _, spec := range getCollectorSpecs(collector_request) {
 		var artifact *artifacts_proto.Artifact = nil
@@ -250,6 +249,14 @@ func (self *Launcher) CompileCollectorArgs(
 				vql_collector_args.OpsPerSecond = collector_request.OpsPerSecond
 			}
 
+			if collector_request.CpuLimit > 0 {
+				vql_collector_args.CpuLimit = collector_request.CpuLimit
+			}
+
+			if collector_request.IopsLimit > 0 {
+				vql_collector_args.IopsLimit = collector_request.IopsLimit
+			}
+
 			if collector_request.Timeout > 0 {
 				vql_collector_args.Timeout = collector_request.Timeout
 			}
@@ -258,6 +265,8 @@ func (self *Launcher) CompileCollectorArgs(
 
 			timeout = vql_collector_args.Timeout
 			ops_per_sec = vql_collector_args.OpsPerSecond
+			cpu_limit = vql_collector_args.CpuLimit
+			iops_limit = vql_collector_args.IopsLimit
 
 			result = append(result, vql_collector_args)
 		}
@@ -279,6 +288,14 @@ func (self *Launcher) CompileCollectorArgs(
 
 	if collector_request.OpsPerSecond == 0 {
 		collector_request.OpsPerSecond = ops_per_sec
+	}
+
+	if collector_request.CpuLimit == 0 {
+		collector_request.CpuLimit = cpu_limit
+	}
+
+	if collector_request.IopsLimit == 0 {
+		collector_request.IopsLimit = iops_limit
 	}
 
 	return result, nil
@@ -470,7 +487,8 @@ func (self *Launcher) ScheduleArtifactCollection(
 	config_obj *config_proto.Config,
 	acl_manager vql_subsystem.ACLManager,
 	repository services.Repository,
-	collector_request *flows_proto.ArtifactCollectorArgs) (string, error) {
+	collector_request *flows_proto.ArtifactCollectorArgs,
+	completion func()) (string, error) {
 
 	args := collector_request.CompiledCollectorArgs
 	if args == nil {
@@ -491,55 +509,45 @@ func (self *Launcher) ScheduleArtifactCollection(
 	}
 
 	return ScheduleArtifactCollectionFromCollectorArgs(
-		config_obj, collector_request, args)
+		config_obj, collector_request, args, completion)
 }
 
 func ScheduleArtifactCollectionFromCollectorArgs(
 	config_obj *config_proto.Config,
 	collector_request *flows_proto.ArtifactCollectorArgs,
-	vql_collector_args []*actions_proto.VQLCollectorArgs) (string, error) {
+	vql_collector_args []*actions_proto.VQLCollectorArgs,
+	completion func()) (string, error) {
 
 	client_id := collector_request.ClientId
 	if client_id == "" {
 		return "", errors.New("Client id not provided.")
 	}
 
-	// Generate a new collection context.
-	collection_context := &flows_proto.ArtifactCollectorContext{
-		SessionId:           NewFlowId(client_id),
-		CreateTime:          uint64(time.Now().UnixNano() / 1000),
-		State:               flows_proto.ArtifactCollectorContext_RUNNING,
-		Request:             collector_request,
-		ClientId:            client_id,
-		OutstandingRequests: int64(len(vql_collector_args)),
-	}
 	db, err := datastore.GetDB(config_obj)
 	if err != nil {
 		return "", err
 	}
 
-	// Save the collection context.
-	flow_path_manager := paths.NewFlowPathManager(client_id,
-		collection_context.SessionId)
-	err = db.SetSubject(config_obj,
-		flow_path_manager.Path(),
-		collection_context)
+	client_manager, err := services.GetClientInfoManager()
 	if err != nil {
 		return "", err
 	}
 
-	tasks := []*crypto_proto.VeloMessage{}
+	session_id := NewFlowId(client_id)
 
+	// Compile all the requests into specific tasks to be sent to the
+	// client.
+	tasks := []*crypto_proto.VeloMessage{}
 	for id, arg := range vql_collector_args {
 		// If sending to the server record who actually launched this.
 		if client_id == "server" {
-			arg.Principal = collection_context.Request.Creator
+			arg.Principal = collector_request.Creator
 		}
 
 		// The task we will schedule for the client.
 		task := &crypto_proto.VeloMessage{
 			QueryId:         uint64(id),
-			SessionId:       collection_context.SessionId,
+			SessionId:       session_id,
 			RequestId:       constants.ProcessVQLResponses,
 			VQLClientAction: arg,
 		}
@@ -549,18 +557,40 @@ func ScheduleArtifactCollectionFromCollectorArgs(
 			task.Urgent = true
 		}
 
-		err = clients.QueueMessageForClient(
-			config_obj, client_id, task)
-		if err != nil {
-			return "", err
-		}
 		tasks = append(tasks, task)
 	}
 
+	// Save the collection context first.
+	flow_path_manager := paths.NewFlowPathManager(client_id, session_id)
+
+	// Generate a new collection context for this flow.
+	collection_context := &flows_proto.ArtifactCollectorContext{
+		SessionId:           session_id,
+		CreateTime:          uint64(time.Now().UnixNano() / 1000),
+		State:               flows_proto.ArtifactCollectorContext_RUNNING,
+		Request:             collector_request,
+		ClientId:            client_id,
+		OutstandingRequests: int64(len(tasks)),
+	}
+
+	// Store the collection_context first, then queue all the tasks.
+	err = db.SetSubjectWithCompletion(config_obj,
+		flow_path_manager.Path(),
+		collection_context,
+
+		func() {
+			// Queue and notify the client about the new tasks
+			client_manager.QueueMessagesForClient(
+				client_id, tasks, true /* notify */)
+		})
+	if err != nil {
+		return "", err
+	}
+
 	// Record the tasks for provenance of what we actually did.
-	err = db.SetSubject(config_obj,
+	err = db.SetSubjectWithCompletion(config_obj,
 		flow_path_manager.Task(),
-		&api_proto.ApiFlowRequestDetails{Items: tasks})
+		&api_proto.ApiFlowRequestDetails{Items: tasks}, nil)
 	if err != nil {
 		return "", err
 	}

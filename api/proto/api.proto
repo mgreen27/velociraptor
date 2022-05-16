@@ -12,6 +12,7 @@ import "google/protobuf/empty.proto";
 import "artifacts.proto";
 import "clients.proto";
 import "datastore.proto";
+import "health.proto";
 import "hunts.proto";
 import "flows.proto";
 import "notebooks.proto";
@@ -74,6 +75,8 @@ message EventRequest {
 
     // The node who is requesting the event stream.
     string node = 2;
+
+    string watcher_name = 3;
 }
 
 message EventResponse {
@@ -99,6 +102,15 @@ service API {
     rpc CreateHunt(Hunt) returns (StartFlowResponse) {
         option (google.api.http) = {
             post: "/api/v1/CreateHunt",
+            body: "*"
+        };
+    }
+
+    // Returns an estimate of the number of clients that might be
+    // affected by a hunt.
+    rpc EstimateHunt(HuntEstimateRequest) returns (HuntStats) {
+        option (google.api.http) = {
+            post: "/api/v1/EstimateHunt",
             body: "*"
         };
     }
@@ -480,4 +492,7 @@ service API {
     rpc SetSubject(DataRequest) returns (DataResponse) {}
     rpc DeleteSubject(DataRequest) returns (google.protobuf.Empty) {}
     rpc ListChildren(DataRequest) returns (ListChildrenResponse) {}
+
+    // Health check protocol as in https://github.com/grpc/grpc/blob/master/doc/health-checking.md
+    rpc Check(HealthCheckRequest) returns (HealthCheckResponse);
 }

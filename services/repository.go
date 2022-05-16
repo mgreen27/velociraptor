@@ -34,7 +34,7 @@ import (
 	"www.velocidex.com/golang/velociraptor/artifacts"
 	artifacts_proto "www.velocidex.com/golang/velociraptor/artifacts/proto"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
-	"www.velocidex.com/golang/velociraptor/file_store/api"
+	"www.velocidex.com/golang/velociraptor/uploads"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
 	"www.velocidex.com/golang/vfilter"
 )
@@ -65,24 +65,31 @@ func RegisterRepositoryManager(repository RepositoryManager) {
 // Make it easier to build a query scope using the aritfact
 // repository.
 type ScopeBuilder struct {
-	Config     *config_proto.Config
-	ACLManager vql_subsystem.ACLManager
-	Uploader   api.Uploader
-	Logger     *log.Logger
-	Env        *ordereddict.Dict
-	Repository Repository
+	// In server context this contains the full server config required
+	// for server plugins.
+	Config *config_proto.Config
+
+	// If running in client context we only present the client config.
+	ClientConfig *config_proto.ClientConfig
+	ACLManager   vql_subsystem.ACLManager
+	Uploader     uploads.Uploader
+	Logger       *log.Logger
+	Env          *ordereddict.Dict
+	Repository   Repository
 }
 
 // An artifact repository holds definitions for artifacts.
 type Repository interface {
 	// Load an entire directory recursively.
-	LoadDirectory(config_obj *config_proto.Config, dirname string) (int, error)
+	LoadDirectory(config_obj *config_proto.Config,
+		dirname string, override_builtins bool) (int, error)
 
 	// Make a copy of this repository.
 	Copy() Repository
 
 	// Load definition in yaml
-	LoadYaml(data string, validate bool) (*artifacts_proto.Artifact, error)
+	LoadYaml(data string, validate, built_in bool) (
+		*artifacts_proto.Artifact, error)
 
 	// Load an artifact protobuf.
 	LoadProto(artifact *artifacts_proto.Artifact, validate bool) (
@@ -141,6 +148,10 @@ type RepositoryManager interface {
 	// Delete the file from the global repository and the data store.
 	DeleteArtifactFile(config_obj *config_proto.Config,
 		principal, name string) error
+}
+
+type MockablePlugin interface {
+	SetMock(rows []vfilter.Row)
 }
 
 // A helper function to build a new scope from an existing scope. This

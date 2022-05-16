@@ -3,9 +3,11 @@ package result_sets
 import (
 	"context"
 	"errors"
+	"regexp"
 
-	"github.com/Velocidex/json"
+	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/file_store/api"
+	"www.velocidex.com/golang/velociraptor/json"
 	"www.velocidex.com/golang/velociraptor/utils"
 )
 
@@ -14,16 +16,25 @@ var (
 	timed_rs_factory TimedFactory
 )
 
+type ResultSetOptions struct {
+	SortColumn   string
+	SortAsc      bool
+	FilterColumn string
+	FilterRegex  *regexp.Regexp
+}
+
 type TimedFactory interface {
 	NewTimedResultSetWriter(
 		file_store_factory api.FileStore,
 		path_manager api.PathManager,
-		opts *json.EncOpts) (TimedResultSetWriter, error)
+		opts *json.EncOpts,
+		completion func()) (TimedResultSetWriter, error)
 
 	NewTimedResultSetWriterWithClock(
 		file_store_factory api.FileStore,
 		path_manager api.PathManager,
-		opts *json.EncOpts, clock utils.Clock) (TimedResultSetWriter, error)
+		opts *json.EncOpts,
+		completion func(), clock utils.Clock) (TimedResultSetWriter, error)
 
 	NewTimedResultSetReader(
 		ctx context.Context,
@@ -34,23 +45,25 @@ type TimedFactory interface {
 func NewTimedResultSetWriter(
 	file_store_factory api.FileStore,
 	path_manager api.PathManager,
-	opts *json.EncOpts) (TimedResultSetWriter, error) {
+	opts *json.EncOpts,
+	completion func()) (TimedResultSetWriter, error) {
 	if timed_rs_factory == nil {
 		panic(errors.New("TimedFactory not initialized"))
 	}
 	return timed_rs_factory.NewTimedResultSetWriter(file_store_factory,
-		path_manager, opts)
+		path_manager, opts, completion)
 }
 
 func NewTimedResultSetWriterWithClock(
 	file_store_factory api.FileStore,
 	path_manager api.PathManager,
-	opts *json.EncOpts, clock utils.Clock) (TimedResultSetWriter, error) {
+	opts *json.EncOpts,
+	completion func(), clock utils.Clock) (TimedResultSetWriter, error) {
 	if timed_rs_factory == nil {
 		panic(errors.New("TimedFactory not initialized"))
 	}
 	return timed_rs_factory.NewTimedResultSetWriterWithClock(file_store_factory,
-		path_manager, opts, clock)
+		path_manager, opts, completion, clock)
 }
 
 func NewTimedResultSetReader(
@@ -69,11 +82,20 @@ type Factory interface {
 		file_store_factory api.FileStore,
 		log_path api.FSPathSpec,
 		opts *json.EncOpts,
-		truncate bool) (ResultSetWriter, error)
+		completion func(),
+		truncate WriteMode) (ResultSetWriter, error)
 
 	NewResultSetReader(
 		file_store_factory api.FileStore,
 		log_path api.FSPathSpec,
+	) (ResultSetReader, error)
+
+	NewResultSetReaderWithOptions(
+		ctx context.Context,
+		config_obj *config_proto.Config,
+		file_store_factory api.FileStore,
+		log_path api.FSPathSpec,
+		options ResultSetOptions,
 	) (ResultSetReader, error)
 }
 
@@ -81,12 +103,13 @@ func NewResultSetWriter(
 	file_store_factory api.FileStore,
 	log_path api.FSPathSpec,
 	opts *json.EncOpts,
-	truncate bool) (ResultSetWriter, error) {
+	completion func(),
+	truncate WriteMode) (ResultSetWriter, error) {
 	if rs_factory == nil {
 		panic(errors.New("ResultSetFactory not initialized"))
 	}
 	return rs_factory.NewResultSetWriter(file_store_factory,
-		log_path, opts, truncate)
+		log_path, opts, completion, truncate)
 
 }
 
@@ -97,6 +120,20 @@ func NewResultSetReader(
 		panic(errors.New("ResultSetFactory not initialized"))
 	}
 	return rs_factory.NewResultSetReader(file_store_factory, log_path)
+}
+
+func NewResultSetReaderWithOptions(
+	ctx context.Context,
+	config_obj *config_proto.Config,
+	file_store_factory api.FileStore,
+	log_path api.FSPathSpec,
+	options ResultSetOptions) (ResultSetReader, error) {
+	if rs_factory == nil {
+		panic(errors.New("ResultSetFactory not initialized"))
+	}
+	return rs_factory.NewResultSetReaderWithOptions(
+		ctx, config_obj,
+		file_store_factory, log_path, options)
 }
 
 // Allows for registration of the result set factory.

@@ -19,9 +19,16 @@ parameters:
       - Second Choice
       - Third Choice
 
+  - name: Hashes
+    validating_regex: '^\s*([A-F0-9]+\s*)+$'
+    description: One or more hashes in hex separated by white space.
+
   - name: RegularExpression
     type: regex
     default: "."
+
+  - name: YaraRule
+    type: yara
 
   - name: Flag
     friendly_name: A Flag with a name
@@ -71,6 +78,10 @@ parameters:
     default: |
       [{"foo": "bar"}]
 
+  - name: FileUpload1
+    type: upload
+    description: FileUpload1 can receive a file upload. The upload content will be available in this variable when executing on the client.
+
 column_types:
   - name: Hex
     type: base64hex
@@ -80,10 +91,21 @@ sources:
       SELECT base64encode(string="This should popup in a hex editor") AS Hex,
              ChoiceSelector, Flag, Flag2, Flag3,
              OffFlag, StartDate, StartDate2, StartDate3,
-             CSVData, CSVData2, JSONData, JSONData2
+             CSVData, CSVData2, JSONData, JSONData2,
+             len(list=FileUpload1) AS FileUpload1Length
       FROM scope()
 
     notebook:
+      - type: vql_suggestion
+        name: Test Suggestion
+        template: |
+          /*
+          # This is a suggestion notebook cell.
+
+          It should be available from the suggestions list.
+          */
+          SELECT * FROM info()
+
       - type: md
         template: |
           # GUI Notebook tests
@@ -146,7 +168,9 @@ sources:
                  -- Standard string form
                  "2021-08-10T15:34:50Z" AS Time4,
 
-                 FlowId, ClientId, Data, URL, URL AS SafeURL, Base64Data
+                 FlowId, ClientId, URL, URL AS SafeURL, Base64Data,
+
+                 "Hello" AS Data
           FROM scope()
 
       - type: Markdown
@@ -272,7 +296,8 @@ sources:
 
           Check both expanded and contracted states of the cell
           */
-          LET Test = "Hellothereongline"
+          LET zalgo = "1̴̣̜̗̰͇͖͖̞̮͈͍̂͜.̸̢̧̨͙̻̜̰̼̔̿̓̄̀̅͌̈́͒͗̈́̒̕̚͜͠e̶̙̞̬̹̥͖̤̟͑͒̂̀̔͠x̵̛̱̠̳͍̦̘̤̙͚̙͈̬́̈́͂̎̽̇̀͝ę̵̯̦̫͖͖͍͈̟̠͉̥͒̑̐̏̕̚̕͜͠"
+          LET Test = "Hellothereongline" + zalgo
 
           SELECT Test AS Test1, Test AS Test2, Test AS Test3,
                  Test AS Test4, Test AS Test5,

@@ -91,7 +91,7 @@ func getArtifactFile(
 	// This is hacky but necessary since we can not reserialize
 	// the artifact - the yaml library is unable to properly round
 	// trip the raw yaml.
-	if !strings.HasPrefix(artifact.Name, constants.ARTIFACT_CUSTOM_NAME_PREFIX) {
+	if artifact.BuiltIn {
 		return ensureArtifactPrefix(artifact.Raw,
 			constants.ARTIFACT_CUSTOM_NAME_PREFIX), nil
 	}
@@ -126,7 +126,7 @@ func setArtifactFile(config_obj *config_proto.Config, principal string,
 		// First ensure that the artifact is correct.
 		tmp_repository := manager.NewRepository()
 		artifact_definition, err := tmp_repository.LoadYaml(
-			in.Artifact, true /* validate */)
+			in.Artifact, true /* validate */, false /* built_in */)
 		if err != nil {
 			return nil, err
 		}
@@ -263,9 +263,12 @@ func searchArtifact(
 				if fields == nil {
 					result.Items = append(result.Items, artifact)
 				} else {
+					// Send back minimal information about the
+					// artifacts
 					new_item := &artifacts_proto.Artifact{}
 					if fields.Name {
 						new_item.Name = artifact.Name
+						new_item.BuiltIn = artifact.BuiltIn
 					}
 
 					result.Items = append(result.Items, new_item)

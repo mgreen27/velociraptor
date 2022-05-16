@@ -8,12 +8,10 @@ import (
 	"io/ioutil"
 	"os"
 	"os/user"
-	"path/filepath"
 	"runtime"
 
 	"github.com/Velocidex/yaml/v2"
 	errors "github.com/pkg/errors"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/logging"
@@ -22,23 +20,23 @@ import (
 
 // A hard error causes the loader to stop immediately.
 type HardError struct {
-	err error
+	Err error
 }
 
 func (self HardError) Error() string {
-	return self.err.Error()
+	return self.Err.Error()
 }
 
 type loader_func func(self *Loader) (*config_proto.Config, error)
+type config_mutator_func func(self *config_proto.Config) error
 type validator func(self *Loader, config_obj *config_proto.Config) error
 
 type Loader struct {
 	verbose, use_writeback, required_logging bool
 
-	write_back_path string
-
-	loaders    []loader_func
-	validators []validator
+	loaders         []loader_func
+	config_mutators []config_mutator_func
+	validators      []validator
 
 	logger *logging.LogContext
 }
@@ -153,22 +151,22 @@ func (self *Loader) WithRequiredUser() *Loader {
 	return self
 }
 
-func (self *Loader) WithOverride(json_data string) *Loader {
+func (self *Loader) WithOverride(filename string) *Loader {
+	if filename == "" {
+		return self
+	}
+
 	self = self.Copy()
-	self.validators = append(self.validators,
-		func(self *Loader, config_obj *config_proto.Config) error {
-			if json_data == "" {
-				return nil
+	self.config_mutators = append(self.config_mutators,
+		func(config_obj *config_proto.Config) error {
+			self.Log("Loading override config from file %v", filename)
+			override, err := read_config_from_file(filename)
+			if err != nil {
+				return HardError{err}
 			}
 
 			// Merge the json blob with the config
-			src := &config_proto.Config{}
-			err := protojson.Unmarshal([]byte(json_data), src)
-			if err != nil {
-				return err
-			}
-
-			proto.Merge(config_obj, src)
+			proto.Merge(config_obj, override)
 			return nil
 		})
 	return self
@@ -209,6 +207,13 @@ func (self *Loader) WithWriteback() *Loader {
 func (self *Loader) WithCustomLoader(loader func(self *Loader) (*config_proto.Config, error)) *Loader {
 	self = self.Copy()
 	self.loaders = append(self.loaders, loader)
+	return self
+}
+
+func (self *Loader) WithConfigMutator(
+	mutator config_mutator_func) *Loader {
+	self = self.Copy()
+	self.config_mutators = append(self.config_mutators, mutator)
 	return self
 }
 
@@ -329,9 +334,9 @@ func (self *Loader) Copy() *Loader {
 	return &Loader{
 		verbose:         self.verbose,
 		logger:          self.logger,
-		write_back_path: self.write_back_path,
 		loaders:         append([]loader_func{}, self.loaders...),
 		validators:      append([]validator{}, self.validators...),
+		config_mutators: append([]config_mutator_func{}, self.config_mutators...),
 	}
 }
 
@@ -348,6 +353,14 @@ func (self *Loader) Validate(config_obj *config_proto.Config) error {
 
 	logging.Reset()
 	logging.SuppressLogging = !self.verbose
+
+	// Apply any configuration mutators
+	for _, mutator := range self.config_mutators {
+		err = mutator(config_obj)
+		if err != nil {
+			return err
+		}
+	}
 
 	// Initialize the logging and dump early messages into the
 	// correct log destination.
@@ -407,42 +420,6 @@ func (self *Loader) Validate(config_obj *config_proto.Config) error {
 		}
 	}
 
-	return nil
-}
-
-func (self *Loader) loadWriteback(config_obj *config_proto.Config) error {
-	// Writeback already loaded - just reuse it.
-	if config_obj.Writeback != nil {
-		return nil
-	}
-
-	existing_writeback := &config_proto.Writeback{}
-
-	filename, err := WritebackLocation(config_obj)
-	if err != nil {
-		return err
-	}
-	if !filepath.IsAbs(filename) && self.write_back_path != "" {
-		filename = filepath.Join(self.write_back_path, filename)
-	}
-
-	self.Log("Loading writeback from %v", filename)
-	data, err := ioutil.ReadFile(filename)
-
-	// Failing to read the file is not an error - the file may not
-	// exist yet.
-	if err == nil {
-		err = yaml.Unmarshal(data, existing_writeback)
-		// writeback file is invalid... Log an error and reset
-		// it otherwise the client will fail to start and
-		// break.
-		if err != nil {
-			self.Log("Writeback file is corrupt - resetting: %v", err)
-		}
-	}
-
-	// Merge the writeback with the config.
-	config_obj.Writeback = existing_writeback
 	return nil
 }
 

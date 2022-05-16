@@ -1,4 +1,4 @@
-package flows
+package flows_test
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/datastore"
 	"www.velocidex.com/golang/velociraptor/file_store/test_utils"
+	"www.velocidex.com/golang/velociraptor/flows"
 	flows_proto "www.velocidex.com/golang/velociraptor/flows/proto"
 	"www.velocidex.com/golang/velociraptor/paths"
 	"www.velocidex.com/golang/velociraptor/services"
@@ -73,11 +74,11 @@ parameters:
 sources:
 - query:
     SELECT * FROM info()
-`, true)
+`, true, true)
 
 	repository.LoadYaml(`
 name: System.Hunt.Creation
-type: SERVER_EVENT`, true)
+type: SERVER_EVENT`, true, true)
 
 	repository.LoadYaml(`
 name: AnotherTestArtifact
@@ -88,7 +89,7 @@ parameters:
 sources:
 - query:
     SELECT * FROM scope()
-`, true)
+`, true, true)
 	request := &api_proto.Hunt{
 		HuntDescription: "My hunt",
 		StartRequest: &flows_proto.ArtifactCollectorArgs{
@@ -97,7 +98,8 @@ sources:
 	}
 
 	acl_manager := vql_subsystem.NullACLManager{}
-	hunt_id, err := CreateHunt(self.ctx, self.config_obj, acl_manager, request)
+	hunt_id, err := flows.CreateHunt(
+		self.ctx, self.config_obj, acl_manager, request)
 
 	assert.NoError(self.T(), err)
 

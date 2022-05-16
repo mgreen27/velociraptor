@@ -28,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	rotatelogs "github.com/lestrrat-go/file-rotatelogs"
+	rotatelogs "github.com/Velocidex/file-rotatelogs"
 	"github.com/mattn/go-isatty"
 	"github.com/pkg/errors"
 	"github.com/rifflock/lfshook"
@@ -50,36 +50,29 @@ var (
 	// Used for high value audit related events.
 	Audit = "VelociraptorAudit"
 
-	// The node name of this node.
+	// Lock for log manager.
+	mu        sync.Mutex
+	Manager   *LogManager
 	node_name = ""
 
-	Manager *LogManager
-
-	mu          sync.Mutex
-	prelogs     []string
-	memory_logs []string
+	// Lock for memory logs and prelogs.
+	memory_log_mu sync.Mutex
+	prelogs       []string
+	memory_logs   []string
 
 	tag_regex         = regexp.MustCompile("<([^>/0]+)>")
 	closing_tag_regex = regexp.MustCompile("</>")
 )
 
-func GetNodeName() string {
-	mu.Lock()
-	defer mu.Unlock()
-
-	return node_name
-}
-
-// Each node in a cluster stores logs in its own directory.
-func SetNodeName(config_obj *config_proto.Config, name string) error {
+func SetNodeName(name string) {
 	mu.Lock()
 	defer mu.Unlock()
 
 	node_name = name
-	return InitLogging(config_obj)
 }
 
 func InitLogging(config_obj *config_proto.Config) error {
+	mu.Lock()
 	Manager = &LogManager{
 		contexts: make(map[*string]*LogContext),
 	}
@@ -94,6 +87,7 @@ func InitLogging(config_obj *config_proto.Config) error {
 		}
 		Manager.contexts[component] = logger
 	}
+	mu.Unlock()
 
 	FlushPrelogs(config_obj)
 
@@ -101,12 +95,14 @@ func InitLogging(config_obj *config_proto.Config) error {
 }
 
 func ClearMemoryLogs() {
+	memory_log_mu.Lock()
 	memory_logs = nil
+	memory_log_mu.Unlock()
 }
 
 func GetMemoryLogs() []string {
-	mu.Lock()
-	defer mu.Unlock()
+	memory_log_mu.Lock()
+	defer memory_log_mu.Unlock()
 
 	return append([]string{}, memory_logs...)
 }
@@ -116,8 +112,8 @@ func GetMemoryLogs() []string {
 // load (because the config is not fully loaded yet). We therefore
 // queue these messages until we are able to flush them.
 func Prelog(format string, v ...interface{}) {
-	mu.Lock()
-	defer mu.Unlock()
+	memory_log_mu.Lock()
+	defer memory_log_mu.Unlock()
 
 	// Truncate too many logs
 	if len(prelogs) > 1000 {
@@ -129,7 +125,12 @@ func Prelog(format string, v ...interface{}) {
 
 func FlushPrelogs(config_obj *config_proto.Config) {
 	logger := GetLogger(config_obj, &GenericComponent)
-	for _, msg := range prelogs {
+
+	memory_log_mu.Lock()
+	lprelogs := append([]string{}, prelogs...)
+	memory_log_mu.Unlock()
+
+	for _, msg := range lprelogs {
 		logger.Info(msg)
 	}
 	prelogs = make([]string, 0)
@@ -179,15 +180,21 @@ func (self *LogManager) GetLogger(
 	self.mu.Lock()
 	defer self.mu.Unlock()
 
-	if config_obj != nil &&
-		config_obj.Logging != nil &&
+	if config_obj.Logging != nil &&
 		!config_obj.Logging.SeparateLogsPerComponent {
 		component = &GenericComponent
 	}
 
 	ctx, pres := self.contexts[component]
 	if !pres {
-		panic(fmt.Sprintf("Uninitialized logging for %v", *component))
+		return &LogContext{
+			Logger: &logrus.Logger{
+				Out:       os.Stderr,
+				Formatter: new(logrus.TextFormatter),
+				Hooks:     make(logrus.LevelHooks),
+				Level:     logrus.DebugLevel,
+			},
+		}
 	}
 	return ctx
 }
@@ -208,7 +215,7 @@ func Reset() {
 func getRotator(
 	config_obj *config_proto.Config,
 	rotator_config *config_proto.LoggingRetentionConfig,
-	base_path string) io.Writer {
+	base_path string) (io.Writer, error) {
 
 	if rotator_config == nil {
 		rotator_config = &config_proto.LoggingRetentionConfig{
@@ -218,7 +225,7 @@ func getRotator(
 	}
 
 	if rotator_config.Disabled {
-		return ioutil.Discard
+		return ioutil.Discard, nil
 	}
 
 	max_age := rotator_config.MaxAge
@@ -239,12 +246,14 @@ func getRotator(
 		// 7 days.
 		rotatelogs.WithRotationTime(time.Duration(rotation)*time.Second),
 	)
-
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
-	return result
+	// Make sure to write one message to confirm that we can actually
+	// write to the file.
+	_, err = result.Write([]byte("Starting...\n"))
+	return result, err
 }
 
 func (self *LogManager) makeNewComponent(
@@ -266,17 +275,31 @@ func (self *LogManager) makeNewComponent(
 		}
 
 		base_filename := filepath.Join(base_directory, *component)
-		pathMap := lfshook.WriterMap{
-			logrus.DebugLevel: getRotator(
-				config_obj, config_obj.Logging.Debug,
-				base_filename+"_debug.log"),
-			logrus.InfoLevel: getRotator(
-				config_obj, config_obj.Logging.Info,
-				base_filename+"_info.log"),
-			logrus.ErrorLevel: getRotator(
-				config_obj, config_obj.Logging.Error,
-				base_filename+"_error.log"),
+		pathMap := lfshook.WriterMap{}
+
+		rotator, err := getRotator(
+			config_obj, config_obj.Logging.Debug,
+			base_filename+"_debug.log")
+		if err != nil {
+			return nil, err
 		}
+		pathMap[logrus.DebugLevel] = rotator
+
+		rotator, err = getRotator(
+			config_obj, config_obj.Logging.Info,
+			base_filename+"_info.log")
+		if err != nil {
+			return nil, err
+		}
+		pathMap[logrus.InfoLevel] = rotator
+
+		rotator, err = getRotator(
+			config_obj, config_obj.Logging.Error,
+			base_filename+"_error.log")
+		if err != nil {
+			return nil, err
+		}
+		pathMap[logrus.ErrorLevel] = rotator
 
 		hook := lfshook.NewHook(
 			pathMap,
@@ -353,7 +376,11 @@ func NewPlainLogger(
 }
 
 func GetLogger(config_obj *config_proto.Config, component *string) *LogContext {
-	if Manager == nil {
+	mu.Lock()
+	lManager := Manager
+	mu.Unlock()
+
+	if lManager == nil {
 		err := InitLogging(config_obj)
 		if err != nil {
 			panic(err)
@@ -384,8 +411,8 @@ func clearTag(message string) string {
 type inMemoryLogWriter struct{}
 
 func (self inMemoryLogWriter) Write(p []byte) (n int, err error) {
-	mu.Lock()
-	defer mu.Unlock()
+	memory_log_mu.Lock()
+	defer memory_log_mu.Unlock()
 
 	// Truncate too many logs
 	if len(memory_logs) > 1000 {

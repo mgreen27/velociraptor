@@ -1,13 +1,18 @@
 package repository
 
 import (
+	"context"
 	"sync"
 
 	"github.com/Velocidex/ordereddict"
+	"www.velocidex.com/golang/velociraptor/accessors"
+	"www.velocidex.com/golang/velociraptor/config"
+	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/constants"
 	"www.velocidex.com/golang/velociraptor/json"
 	"www.velocidex.com/golang/velociraptor/services"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
+	"www.velocidex.com/golang/velociraptor/vql/remapping"
 	"www.velocidex.com/golang/velociraptor/vql/sorter"
 	"www.velocidex.com/golang/vfilter"
 )
@@ -26,8 +31,20 @@ func _build(wg *sync.WaitGroup, self services.ScopeBuilder, from_scratch bool) v
 		self.Repository, _ = manager.GetGlobalRepository(self.Config)
 	}
 
+	var scope vfilter.Scope
+	if from_scratch || self.Config != nil && self.Config.Remappings != nil {
+		scope = vql_subsystem.MakeNewScope()
+	} else {
+		scope = vql_subsystem.MakeScope()
+	}
+
+	scope.SetLogger(self.Logger)
+
 	cache := vql_subsystem.NewScopeCache()
 	env.Set(vql_subsystem.CACHE_VAR, cache)
+
+	device_manager := accessors.GlobalDeviceManager.Copy()
+	env.Set(constants.SCOPE_DEVICE_MANAGER, device_manager)
 
 	if self.Config != nil {
 		// Server config contains secrets - they are stored in
@@ -37,7 +54,17 @@ func _build(wg *sync.WaitGroup, self services.ScopeBuilder, from_scratch bool) v
 
 		if self.Config.Client != nil {
 			env.Set(constants.SCOPE_CONFIG, self.Config.Client)
+		} else {
+			env.Set(constants.SCOPE_CONFIG, &config_proto.ClientConfig{
+				Version: config.GetVersion(),
+			})
 		}
+	}
+
+	// Builder can contain only the client config if it is running on
+	// the client.
+	if self.ClientConfig != nil {
+		env.Set(constants.SCOPE_CONFIG, self.ClientConfig)
 	}
 
 	if self.ACLManager != nil {
@@ -46,13 +73,6 @@ func _build(wg *sync.WaitGroup, self services.ScopeBuilder, from_scratch bool) v
 
 	if self.Uploader != nil {
 		env.Set(constants.SCOPE_UPLOADER, self.Uploader)
-	}
-
-	var scope vfilter.Scope
-	if from_scratch {
-		scope = vql_subsystem.MakeNewScope()
-	} else {
-		scope = vql_subsystem.MakeScope()
 	}
 
 	// Use our own sorter
@@ -64,9 +84,42 @@ func _build(wg *sync.WaitGroup, self services.ScopeBuilder, from_scratch bool) v
 	scope.AppendVars(env).AddProtocolImpl(
 		_ArtifactRepositoryPluginAssociativeProtocol{})
 
-	scope.SetLogger(self.Logger)
-
 	env.Set(constants.SCOPE_ROOT, scope)
+
+	// If there are remappings in the config file, we apply them to
+	// all scopes.
+	if self.Config != nil && self.Config.Remappings != nil {
+		// We create a pristine copy of the scope so it can be
+		// captured in the context of accessors that will be remapped.
+		pristine_scope := scope.Copy()
+		pristine_scope.AppendVars(ordereddict.NewDict().
+			Set(constants.SCOPE_DEVICE_MANAGER,
+				accessors.GlobalDeviceManager.Copy()))
+
+		device_manager.Clear()
+
+		// Pass pristine scope to delegates.
+		err := remapping.ApplyRemappingOnScope(
+			context.Background(),
+			pristine_scope, // Pristine scope
+			scope,          // Remapped scope
+			device_manager,
+			env, self.Config.Remappings)
+		if err != nil {
+			scope.Log("Applying remapping: %v", err)
+		}
+
+		// Reduce permissions based on the configuration.
+		if self.ACLManager != nil {
+			new_acl_manager, err := accessors.GetRemappingACLManager(
+				self.ACLManager, self.Config.Remappings)
+			if err != nil {
+				scope.Log("Applying remapping: %v", err)
+			}
+
+			env.Set(vql_subsystem.ACL_MANAGER_VAR, new_acl_manager)
+		}
+	}
 
 	_ = scope.AddDestructor(func() {
 		scope.Log("Query Stats: %v", json.MustMarshalString(

@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"context"
+	"errors"
 	"io"
 	"io/ioutil"
 	"os"
@@ -16,7 +18,8 @@ import (
 // Loads the global repository with artifacts from the frontend path
 // and the file store.
 func InitializeGlobalRepositoryFromFilestore(
-	config_obj *config_proto.Config, global_repository *Repository) (*Repository, error) {
+	ctx context.Context, config_obj *config_proto.Config,
+	global_repository *Repository) (*Repository, error) {
 	if config_obj.Frontend == nil {
 		return global_repository, nil
 	}
@@ -25,12 +28,21 @@ func InitializeGlobalRepositoryFromFilestore(
 
 	// Load artifacts from the custom file store.
 	file_store_factory := file_store.GetFileStore(config_obj)
-	err := file_store_factory.Walk(paths.ARTIFACT_DEFINITION_PREFIX,
+	err := api.Walk(file_store_factory, paths.ARTIFACT_DEFINITION_PREFIX,
 		func(path api.FSPathSpec, info os.FileInfo) error {
 			if path.Type() != api.PATH_TYPE_FILESTORE_YAML {
 				return nil
 			}
 
+			select {
+			case <-ctx.Done():
+				return errors.New("GetGlobalRepository: Cancelled")
+
+			default:
+			}
+
+			// Failing to read a single file is not fatal - just keep
+			// going loading the other files.
 			fd, err := file_store_factory.ReadFile(path)
 			if err != nil {
 				logger.Error("GetGlobalRepository: %v", err)
@@ -46,7 +58,9 @@ func InitializeGlobalRepositoryFromFilestore(
 			}
 
 			artifact_obj, err := global_repository.LoadYaml(
-				string(data), false /* validate */)
+				string(data),
+				false, /* validate */
+				false /* built_in */)
 			if err != nil {
 				logger.Info("Unable to load custom "+
 					"artifact %s: %v",

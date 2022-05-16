@@ -20,9 +20,15 @@ package utils
 
 import (
 	"fmt"
+	"os"
+	"runtime/debug"
 
 	"github.com/davecgh/go-spew/spew"
 )
+
+func PrintStack() {
+	debug.PrintStack()
+}
 
 func Debug(arg interface{}) {
 	spew.Dump(arg)
@@ -31,5 +37,31 @@ func Debug(arg interface{}) {
 func DlvBreak() {
 	if false {
 		fmt.Printf("Break")
+		PrintStack()
+	}
+}
+
+func DebugToFile(filename, format string, v ...interface{}) {
+	fd, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 0700)
+	if err != nil {
+		panic(err)
+	}
+	defer fd.Close()
+
+	fd.Seek(0, os.SEEK_END)
+	fd.Write([]byte(fmt.Sprintf(format, v...) + "\n"))
+}
+
+type DebugStringer interface {
+	DebugString() string
+}
+
+func DebugString(v interface{}) string {
+	switch t := v.(type) {
+	case DebugStringer:
+		return t.DebugString()
+
+	default:
+		return fmt.Sprintf("%T %v", v, v)
 	}
 }

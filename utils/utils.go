@@ -21,12 +21,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/Velocidex/ordereddict"
-	"github.com/golang/protobuf/jsonpb"
-	"github.com/golang/protobuf/proto"
 	errors "github.com/pkg/errors"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	vjson "www.velocidex.com/golang/velociraptor/json"
 	"www.velocidex.com/golang/vfilter"
 	"www.velocidex.com/golang/vfilter/types"
@@ -189,6 +190,11 @@ func ToInt64(x interface{}) (int64, bool) {
 		return int64(t), true
 	case int64:
 		return t, true
+
+	case string:
+		value, err := strconv.ParseInt(t, 0, 64)
+		return value, err == nil
+
 	case float64:
 		return int64(t), true
 
@@ -207,6 +213,5 @@ func ParseIntoProtobuf(source interface{}, destination proto.Message) error {
 		return err
 	}
 
-	return jsonpb.UnmarshalString(
-		string(serialized), destination)
+	return protojson.Unmarshal(serialized, destination)
 }

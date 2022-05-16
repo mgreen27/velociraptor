@@ -8,6 +8,7 @@ import (
 	"reflect"
 
 	"github.com/Velocidex/ordereddict"
+	"github.com/Velocidex/yaml/v2"
 	"www.velocidex.com/golang/velociraptor/file_store/csv"
 	"www.velocidex.com/golang/velociraptor/json"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
@@ -18,7 +19,7 @@ import (
 
 type EncodeFunctionArgs struct {
 	Item   vfilter.Any `vfilter:"required,field=item,doc=The item to encode"`
-	Format string      `vfilter:"optional,field=format,doc=Encoding format (csv,json)"`
+	Format string      `vfilter:"optional,field=format,doc=Encoding format (csv,json,yaml,hex,base64)"`
 }
 
 type EncodeFunction struct{}
@@ -58,6 +59,14 @@ func (self *EncodeFunction) Call(ctx context.Context,
 
 		return string(serialized_content)
 
+	case "yaml":
+		serialized, err := yaml.Marshal(result)
+		if err != nil {
+			scope.Log("serialize: %v", err)
+			return vfilter.Null{}
+		}
+		return string(serialized)
+
 	case "hex":
 		switch t := result.(type) {
 		case []byte:
@@ -85,8 +94,11 @@ func (self *EncodeFunction) Call(ctx context.Context,
 		if reflect.TypeOf(result).Kind() != reflect.Slice {
 			return vfilter.Null{}
 		}
+
+		config_obj, _ := vql_subsystem.GetServerConfig(scope)
+
 		buff := bytes.NewBuffer([]byte{})
-		csv_writer := csv.GetCSVAppender(
+		csv_writer := csv.GetCSVAppender(config_obj,
 			scope, buff,
 			true /* write_headers */)
 

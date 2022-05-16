@@ -4,7 +4,9 @@ package journal
 // and receives events from the master node.
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io/ioutil"
 	"os"
 	"sync"
@@ -13,6 +15,7 @@ import (
 	"github.com/Velocidex/ordereddict"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/sirupsen/logrus"
 	api_proto "www.velocidex.com/golang/velociraptor/api/proto"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/file_store"
@@ -20,11 +23,30 @@ import (
 	"www.velocidex.com/golang/velociraptor/grpc_client"
 	"www.velocidex.com/golang/velociraptor/json"
 	"www.velocidex.com/golang/velociraptor/logging"
+	"www.velocidex.com/golang/velociraptor/paths/artifacts"
 	"www.velocidex.com/golang/velociraptor/result_sets"
 	"www.velocidex.com/golang/velociraptor/services"
+	"www.velocidex.com/golang/velociraptor/utils"
 )
 
 var (
+	replicationSendHistorgram = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "replication_minion_latency",
+			Help:    "Latency to send replication messages from minion to the master.",
+			Buckets: prometheus.LinearBuckets(0.1, 1, 10),
+		},
+	)
+
+	replicationItemSize = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name: "replication_item_size",
+			Help: "Size of replicated message.",
+			Buckets: prometheus.LinearBuckets(
+				100*1024, 1024*1024, 10),
+		},
+	)
+
 	replicationTotalSent = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "replication_service_total_send",
 		Help: "Total number of PushRow rpc calls.",
@@ -47,16 +69,23 @@ type ReplicationService struct {
 	tmpfile    *os.File
 	ctx        context.Context
 
-	sender chan *api_proto.PushEventRequest
+	// Locally connected watchers.
+	qm    api.QueueManager
+	Clock utils.Clock
 
-	api_client api_proto.APIClient
-	closer     func() error
+	sender chan *api_proto.PushEventRequest
 
 	// Synchronizes access to files. NOTE: This only works within
 	// process!
 	mu            sync.Mutex
 	locks         map[string]*sync.Mutex
 	retryDuration time.Duration
+
+	// The set of events the master is interested in.
+	masterRegistrations map[string]bool
+
+	// Store rows for async push
+	batch map[string]*bytes.Buffer
 }
 
 func (self *ReplicationService) RetryDuration() time.Duration {
@@ -73,7 +102,18 @@ func (self *ReplicationService) SetRetryDuration(duration time.Duration) {
 	self.retryDuration = duration
 }
 
+func (self *ReplicationService) isEventRegistered(artifact string) bool {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+
+	ok, pres := self.masterRegistrations[artifact]
+	return pres && ok
+}
+
 func (self *ReplicationService) pumpEventFromBufferFile() {
+	logger := logging.GetLogger(self.config_obj, &logging.FrontendComponent)
+	frontend_manager := services.GetFrontendManager()
+
 	for {
 		event, err := self.Buffer.Lease()
 		// No events available or some other error, sleep and
@@ -90,40 +130,89 @@ func (self *ReplicationService) pumpEventFromBufferFile() {
 
 		// Retry to send the event.
 		for {
-			_, err := self.api_client.PushEvents(self.ctx, event)
+			// Get a new API handle each time in case it became invalid.
+			api_client, closer, err := frontend_manager.GetMasterAPIClient(
+				self.ctx)
+			if err != nil {
+				logger.Error("<red>ReplicationService</>Unable to connect %v",
+					err)
+				time.Sleep(time.Second)
+				continue
+			}
+
+			_, err = api_client.PushEvents(self.ctx, event)
 			if err == nil {
+				closer()
 				break
 			}
+
 			// We are unable to send it, sleep and
 			// try again later.
 			select {
 			case <-self.ctx.Done():
+				closer()
 				return
 
 			case <-time.After(self.RetryDuration()):
-				continue
 			}
+			closer()
 		}
 	}
 }
 
+// Periodically flush the batches built up during
+// PushRowsToArtifactAsync calls.
+func (self *ReplicationService) startAsyncLoop(
+	ctx context.Context,
+	wg *sync.WaitGroup,
+	config_obj *config_proto.Config) {
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+
+			case <-time.After(200 * time.Millisecond):
+				// Work on the batch without a lock
+				self.mu.Lock()
+				todo := self.batch
+				self.batch = make(map[string]*bytes.Buffer)
+				self.mu.Unlock()
+
+				for k, v := range todo {
+					// Ignore errors since there is no way to report
+					// to the caller.
+					self.PushJsonlToArtifact(
+						config_obj, v.Bytes(), k, "server", "")
+				}
+			}
+		}
+	}()
+}
+
 func (self *ReplicationService) Start(
-	ctx context.Context, wg *sync.WaitGroup) (err error) {
+	ctx context.Context,
+	config_obj *config_proto.Config, wg *sync.WaitGroup) (err error) {
 
 	// If we are the master node we do not replicate anywhere.
-	api_client, closer, err := services.GetFrontendManager().
-		GetMasterAPIClient(ctx)
-	if err != nil {
-		return err
+	frontend_manager := services.GetFrontendManager()
+	if frontend_manager == nil {
+		return errors.New("Frontend not configured")
 	}
 
 	// Initialize our default values and start the service for
 	// real.
-	self.api_client = api_client
-	self.closer = closer
 	self.ctx = ctx
-	self.sender = make(chan *api_proto.PushEventRequest, 100)
-	self.SetRetryDuration(time.Second)
+
+	// Do not have channel buffer because then we might lose events on
+	// restart. Events will flow on to the buffer file when the gRPC
+	// client is too busy.
+	self.sender = make(chan *api_proto.PushEventRequest)
+	self.SetRetryDuration(5 * time.Second)
 
 	self.tmpfile, err = ioutil.TempFile("", "replication")
 	if err != nil {
@@ -137,38 +226,145 @@ func (self *ReplicationService) Start(
 
 	go self.pumpEventFromBufferFile()
 
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer self.Close()
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+
+					// Read events from the channel and
+					// try to send them
+				case request, ok := <-self.sender:
+					if !ok {
+						return
+					}
+
+					timer := prometheus.NewTimer(
+						prometheus.ObserverFunc(func(v float64) {
+							replicationSendHistorgram.Observe(v)
+						}))
+
+					api_client, closer, err := frontend_manager.GetMasterAPIClient(ctx)
+					if err != nil {
+						continue
+					}
+
+					_, err = api_client.PushEvents(ctx, request)
+					timer.ObserveDuration()
+
+					if err != nil {
+						replicationTotalSendErrors.Inc()
+
+						// Attempt to push the events
+						// to the buffer file instead
+						// for later delivery.
+						_ = self.Buffer.Enqueue(request)
+					}
+					closer()
+				}
+			}
+		}()
+	}
+
+	// Startup the async writer. This is used to queue up multiple
+	// small events to write in larger chunks for gRPC efficiency.
+	self.startAsyncLoop(ctx, wg, config_obj)
+
+	self.startMasterRegistrationLoop(ctx, wg, config_obj)
+
+	logger := logging.GetLogger(self.config_obj, &logging.FrontendComponent)
+	logger.Debug("<green>Starting</> Replication service to master frontend at %v",
+		grpc_client.GetAPIConnectionString(self.config_obj))
+
+	return nil
+}
+
+func (self *ReplicationService) ProcessMasterRegistrations(event *ordereddict.Dict) {
+	names_any, pres := event.Get("Events")
+	if !pres {
+		return
+	}
+
+	names, ok := names_any.([]interface{})
+	if ok {
+		self.mu.Lock()
+		self.masterRegistrations = make(map[string]bool)
+
+		for _, name := range names {
+			name_str, ok := name.(string)
+			if ok {
+				self.masterRegistrations[name_str] = true
+			}
+		}
+		logger := logging.GetLogger(self.config_obj, &logging.FrontendComponent)
+		logger.WithFields(logrus.Fields{
+			"events": names,
+		}).Info("Master event registrations")
+		self.mu.Unlock()
+	}
+}
+
+func (self *ReplicationService) startMasterRegistrationLoop(
+	ctx context.Context, wg *sync.WaitGroup, config_obj *config_proto.Config) {
+
+	events, cancel := self.Watch(ctx,
+		"Server.Internal.MasterRegistrations", "ReplicationService")
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		defer self.Close()
+		defer cancel()
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
 
-				// Read events from the channel and
-				// try to send them
-			case request, ok := <-self.sender:
+			case event, ok := <-events:
 				if !ok {
 					return
 				}
-				_, err = self.api_client.PushEvents(ctx, request)
-				if err != nil {
-					replicationTotalSendErrors.Inc()
-
-					// Attempt to push the events
-					// to the buffer file instead
-					// for later delivery.
-					_ = self.Buffer.Enqueue(request)
-				}
+				self.ProcessMasterRegistrations(event)
 			}
 		}
 	}()
 
-	logger := logging.GetLogger(self.config_obj, &logging.FrontendComponent)
-	logger.Debug("<green>Starting</> Replication service to master frontend at %v",
-		grpc_client.GetAPIConnectionString(self.config_obj))
+}
+
+func (self *ReplicationService) AppendJsonlToResultSet(
+	config_obj *config_proto.Config,
+	path api.FSPathSpec,
+	jsonl []byte) error {
+
+	// Key a lock to manage access to this file.
+	self.mu.Lock()
+	key := path.AsClientPath()
+	mu, pres := self.locks[key]
+	if !pres {
+		mu = &sync.Mutex{}
+		self.locks[key] = mu
+	}
+	self.mu.Unlock()
+
+	// Lock the file.
+	mu.Lock()
+	defer mu.Unlock()
+
+	file_store_factory := file_store.GetFileStore(config_obj)
+
+	rs_writer, err := result_sets.NewResultSetWriter(file_store_factory,
+		path, json.NoEncOpts, utils.BackgroundWriter, result_sets.AppendMode)
+	if err != nil {
+		return err
+	}
+
+	rs_writer.WriteJSONL(jsonl, 0)
+	rs_writer.Close()
 
 	return nil
 }
@@ -195,7 +391,7 @@ func (self *ReplicationService) AppendToResultSet(
 	file_store_factory := file_store.GetFileStore(config_obj)
 
 	rs_writer, err := result_sets.NewResultSetWriter(file_store_factory,
-		path, nil, false /* truncate */)
+		path, json.NoEncOpts, utils.BackgroundWriter, result_sets.AppendMode)
 	if err != nil {
 		return err
 	}
@@ -209,27 +405,116 @@ func (self *ReplicationService) AppendToResultSet(
 	return nil
 }
 
-func (self *ReplicationService) PushRowsToArtifact(
-	config_obj *config_proto.Config,
-	rows []*ordereddict.Dict, artifact, client_id, flow_id string) error {
+func (self *ReplicationService) Broadcast(
+	config_obj *config_proto.Config, rows []*ordereddict.Dict,
+	artifact, client_id, flows_id string) error {
 
-	replicationTotalSent.Inc()
+	return notInitializedError
+}
 
-	serialized, err := json.MarshalJsonl(rows)
+func (self *ReplicationService) PushRowsToArtifactAsync(
+	config_obj *config_proto.Config, row *ordereddict.Dict,
+	artifact string) {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+
+	queue, pres := self.batch[artifact]
+	if !pres {
+		queue = &bytes.Buffer{}
+	}
+
+	serialized, err := row.MarshalJSON()
+	if err == nil {
+		queue.Write(serialized)
+		queue.Write([]byte("\n"))
+	}
+	self.batch[artifact] = queue
+}
+
+func (self *ReplicationService) pushRowsToLocalQueueManager(
+	config_obj *config_proto.Config, rows []*ordereddict.Dict,
+	artifact, client_id, flows_id string) error {
+
+	path_manager, err := artifacts.NewArtifactPathManager(
+		config_obj, client_id, flows_id, artifact)
+	if err != nil {
+		return err
+	}
+	path_manager.Clock = self.Clock
+
+	// Just a regular artifact, append to the existing result set.
+	if !path_manager.IsEvent() {
+		path, err := path_manager.GetPathForWriting()
+		if err != nil {
+			return err
+		}
+		return self.AppendToResultSet(config_obj, path, rows)
+	}
+
+	// The Queue manager will manage writing event artifacts to a
+	// timed result set, including multi frontend synchronisation.
+	if self != nil && self.qm != nil {
+		return self.qm.PushEventRows(path_manager, rows)
+	}
+	return errors.New("Filestore not initialized")
+}
+
+func (self *ReplicationService) pushJsonlToLocalQueueManager(
+	config_obj *config_proto.Config, jsonl []byte,
+	artifact, client_id, flows_id string) error {
+
+	path_manager, err := artifacts.NewArtifactPathManager(
+		config_obj, client_id, flows_id, artifact)
+	if err != nil {
+		return err
+	}
+	path_manager.Clock = self.Clock
+
+	// Just a regular artifact, append to the existing result set.
+	if !path_manager.IsEvent() {
+		path, err := path_manager.GetPathForWriting()
+		if err != nil {
+			return err
+		}
+		return self.AppendJsonlToResultSet(config_obj, path, jsonl)
+	}
+
+	// The Queue manager will manage writing event artifacts to a
+	// timed result set, including multi frontend synchronisation.
+	if self != nil && self.qm != nil {
+		return self.qm.PushEventJsonl(path_manager, jsonl)
+	}
+	return errors.New("Filestore not initialized")
+}
+
+func (self *ReplicationService) PushJsonlToArtifact(
+	config_obj *config_proto.Config, jsonl []byte,
+	artifact, client_id, flow_id string) error {
+
+	err := self.pushJsonlToLocalQueueManager(
+		config_obj, jsonl, artifact, client_id, flow_id)
 	if err != nil {
 		return err
 	}
 
+	// Do not replicate the event if the master does not care about it.
+	if !self.isEventRegistered(artifact) {
+		return nil
+	}
+
+	replicationTotalSent.Inc()
+
+	replicationItemSize.Observe(float64(len(jsonl)))
 	request := &api_proto.PushEventRequest{
 		Artifact: artifact,
 		ClientId: client_id,
 		FlowId:   flow_id,
-		Jsonl:    serialized,
+		Jsonl:    jsonl,
 	}
 
 	logger := logging.GetLogger(self.config_obj, &logging.FrontendComponent)
-	logger.Debug("<green>ReplicationService</> Sending %v rows to %v for %v.",
-		len(rows), artifact, client_id)
+	logger.Debug("<green>ReplicationService</> Sending %v bytes to %v for %v.",
+		len(jsonl), artifact, client_id)
 
 	// Should not block! If the channel is full we save the event
 	// into the file buffer for later.
@@ -241,7 +526,57 @@ func (self *ReplicationService) PushRowsToArtifact(
 	}
 }
 
-func (self *ReplicationService) Watch(ctx context.Context, queue string) (
+func (self *ReplicationService) PushRowsToArtifact(
+	config_obj *config_proto.Config,
+	rows []*ordereddict.Dict, artifact, client_id, flow_id string) error {
+
+	err := self.pushRowsToLocalQueueManager(
+		config_obj, rows, artifact, client_id, flow_id)
+	if err != nil {
+		return err
+	}
+
+	// Do not replicate the event if the master does not care about it.
+	if !self.isEventRegistered(artifact) {
+		return nil
+	}
+
+	replicationTotalSent.Inc()
+
+	serialized, err := json.MarshalJsonl(rows)
+	if err != nil {
+		return err
+	}
+	replicationItemSize.Observe(float64(len(serialized)))
+
+	request := &api_proto.PushEventRequest{
+		Artifact: artifact,
+		ClientId: client_id,
+		FlowId:   flow_id,
+		Jsonl:    serialized,
+	}
+
+	logger := logging.GetLogger(self.config_obj, &logging.FrontendComponent)
+	logger.Debug("<green>ReplicationService</> Sending %v rows (%v bytes) to %v for %v.",
+		len(rows), len(serialized), artifact, client_id)
+
+	// Should not block! If the channel is full we save the event
+	// into the file buffer for later.
+	select {
+	case self.sender <- request:
+		return nil
+	default:
+		return self.Buffer.Enqueue(request)
+	}
+}
+
+func (self *ReplicationService) GetWatchers() []string {
+	return nil
+}
+
+// Watch the master for new events
+func (self *ReplicationService) Watch(
+	ctx context.Context, queue, watcher_name string) (
 	<-chan *ordereddict.Dict, func()) {
 
 	output_chan := make(chan *ordereddict.Dict)
@@ -251,7 +586,8 @@ func (self *ReplicationService) Watch(ctx context.Context, queue string) (
 		for {
 			// Keep retrying to reconnect in case the
 			// connection dropped.
-			for event := range self.watchOnce(subctx, queue) {
+			for event := range self.watchOnce(
+				subctx, queue, watcher_name) {
 				output_chan <- event
 			}
 
@@ -263,8 +599,8 @@ func (self *ReplicationService) Watch(ctx context.Context, queue string) (
 
 			logger := logging.GetLogger(self.config_obj,
 				&logging.FrontendComponent)
-			logger.Info("<green>ReplicationService Reconnect</>: "+
-				"Watch for events from %v", queue)
+			logger.Info("<green>ReplicationService Reconnect</>%s: "+
+				"Watch for events from %v", watcher_name, queue)
 		}
 	}()
 
@@ -273,24 +609,39 @@ func (self *ReplicationService) Watch(ctx context.Context, queue string) (
 
 // Try to connect to the API handler once and return in case of
 // failure.
-func (self *ReplicationService) watchOnce(ctx context.Context, queue string) <-chan *ordereddict.Dict {
+func (self *ReplicationService) watchOnce(
+	ctx context.Context,
+	queue, watcher_name string) <-chan *ordereddict.Dict {
 
 	output_chan := make(chan *ordereddict.Dict)
 
 	logger := logging.GetLogger(self.config_obj, &logging.FrontendComponent)
-	logger.Info("<green>ReplicationService</>: Watching for events from %v", queue)
+	logger.Info("<green>ReplicationService</>%s: Watching for events from %v",
+		watcher_name, queue)
 
 	subctx, cancel := context.WithCancel(ctx)
 
-	stream, err := self.api_client.WatchEvent(subctx, &api_proto.EventRequest{
-		Queue: queue,
-	})
+	frontend_manager := services.GetFrontendManager()
+	api_client, closer, err := frontend_manager.GetMasterAPIClient(ctx)
 	if err != nil {
+		logger.Error("<red>ReplicationService</>Unable to connect %v", err)
 		close(output_chan)
 		return output_chan
 	}
 
+	stream, err := api_client.WatchEvent(subctx, &api_proto.EventRequest{
+		Queue: queue,
+		WatcherName: watcher_name + "_" +
+			services.GetNodeName(self.config_obj.Frontend),
+	})
+	if err != nil {
+		close(output_chan)
+		closer()
+		return output_chan
+	}
+
 	go func() {
+		defer closer()
 		defer close(output_chan)
 		defer cancel()
 
@@ -311,10 +662,10 @@ func (self *ReplicationService) watchOnce(ctx context.Context, queue string) <-c
 					return
 
 				case output_chan <- dict:
-					logger.Debug("<green>ReplicationService</>: Received event on %v: %v\n", queue, dict)
+					//logger.Debug("<green>ReplicationService</>: Received event on %v: %v\n", queue, dict)
+					logger.Debug("<green>ReplicationService</>: Received event on %v\n", queue)
 				}
 			}
-
 		}
 	}()
 
@@ -322,7 +673,32 @@ func (self *ReplicationService) watchOnce(ctx context.Context, queue string) <-c
 }
 
 func (self *ReplicationService) Close() {
-	self.closer()
 	self.Buffer.Close()
 	os.Remove(self.tmpfile.Name()) // clean up file buffer
+}
+
+func NewReplicationService(
+	ctx context.Context,
+	wg *sync.WaitGroup,
+	config_obj *config_proto.Config) (
+	*ReplicationService, error) {
+
+	service := &ReplicationService{
+		config_obj:          config_obj,
+		locks:               make(map[string]*sync.Mutex),
+		masterRegistrations: make(map[string]bool),
+		batch:               make(map[string]*bytes.Buffer),
+		Clock:               utils.RealClock{},
+	}
+
+	qm, err := file_store.GetQueueManager(config_obj)
+	if err != nil || qm != nil {
+		service.qm = qm
+	}
+
+	err = service.Start(ctx, config_obj, wg)
+	if err == nil {
+		services.RegisterJournal(service)
+	}
+	return service, err
 }

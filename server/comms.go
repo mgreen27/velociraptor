@@ -29,12 +29,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	file_store_accessor "www.velocidex.com/golang/velociraptor/accessors/file_store"
 	"www.velocidex.com/golang/velociraptor/crypto"
 	"www.velocidex.com/golang/velociraptor/file_store"
-	"www.velocidex.com/golang/velociraptor/file_store/accessors"
 	"www.velocidex.com/golang/velociraptor/services"
 	"www.velocidex.com/golang/velociraptor/utils"
 
+	"github.com/Velocidex/ordereddict"
 	"github.com/juju/ratelimit"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -99,13 +100,20 @@ var (
 		Help: "Number of responses rejected due to concurrency timeouts.",
 	})
 
-	concurrencyHistorgram = promauto.NewHistogramVec(
+	concurrencyHistorgram = promauto.NewHistogram(
 		prometheus.HistogramOpts{
-			Name:    "frontend_reader_latency",
+			Name:    "frontend_receiver_latency",
 			Help:    "Latency to receive client data in second.",
 			Buckets: prometheus.LinearBuckets(0.1, 1, 10),
 		},
-		[]string{"status"},
+	)
+
+	concurrencyWaitHistorgram = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "frontend_concurrency_wait_latency",
+			Help:    "Latency for clients waiting to get a concurrency slot (excludes actual serving time).",
+			Buckets: prometheus.LinearBuckets(0.1, 1, 10),
+		},
 	)
 )
 
@@ -121,15 +129,15 @@ func PrepareFrontendMux(
 	base := config_obj.Frontend.BasePath
 	router.Handle(base+"/healthz", healthz(server_obj))
 	router.Handle(base+"/server.pem", server_pem(config_obj))
-	router.Handle(base+"/control", control(server_obj))
-	router.Handle(base+"/reader", reader(config_obj, server_obj))
+	router.Handle(base+"/control", RecordHTTPStats(control(server_obj)))
+	router.Handle(base+"/reader", RecordHTTPStats(reader(config_obj, server_obj)))
 
 	// Publicly accessible part of the filestore. NOTE: this
 	// does not have to be a physical directory - it is served
 	// from the filestore.
 	router.Handle(base+"/public/", GetLoggingHandler(config_obj, "/public")(
 		http.StripPrefix(base, forceMime(http.FileServer(
-			accessors.NewFileSystem(config_obj,
+			file_store_accessor.NewFileSystem(config_obj,
 				file_store.GetFileStore(config_obj),
 				"/public/"))))))
 
@@ -275,6 +283,13 @@ func control(server_obj *Server) http.Handler {
 		// allows clients with urgent messages to always be
 		// processing even when the frontend are loaded.
 		if priority != "urgent" {
+			// Keep track of the average time the request spends
+			// waiting for a concurrency slot. If this time is too
+			// long it means concurrency may need to be increased.
+			timer := prometheus.NewTimer(prometheus.ObserverFunc(func(v float64) {
+				concurrencyWaitHistorgram.Observe(v)
+			}))
+
 			cancel, err := server_obj.Concurrency().StartConcurrencyControl(ctx)
 			if err != nil {
 				http.Error(w, "Timeout", http.StatusRequestTimeout)
@@ -283,14 +298,15 @@ func control(server_obj *Server) http.Handler {
 			}
 			defer cancel()
 
+			timer.ObserveDuration()
+
 		} else {
 			urgentCounter.Inc()
 		}
 
 		// Measure the latency from this point on.
-		var status string
 		timer := prometheus.NewTimer(prometheus.ObserverFunc(func(v float64) {
-			concurrencyHistorgram.WithLabelValues(status).Observe(v)
+			concurrencyHistorgram.Observe(v)
 		}))
 		defer func() {
 			timer.ObserveDuration()
@@ -345,12 +361,13 @@ func control(server_obj *Server) http.Handler {
 
 		sync := make(chan []byte)
 		go func() {
-			defer cancel()
+			defer close(sync)
+
 			response, _, err := server_obj.Process(ctx, message_info,
 				false, // drain_requests_for_client
 			)
 			if err != nil {
-				server_obj.Error("Error:", err)
+				server_obj.Error("Error: %v", err)
 			} else {
 				sync <- response
 			}
@@ -372,8 +389,11 @@ func control(server_obj *Server) http.Handler {
 			case <-ctx.Done():
 				return
 
-			case response := <-sync:
-				_, _ = w.Write(response)
+			case response, ok := <-sync:
+				if ok {
+					_, _ = w.Write(response)
+				}
+				return
 
 			case <-time.After(3 * time.Second):
 				_, _ = w.Write(serialized_pad)
@@ -435,6 +455,41 @@ func reader(config_obj *config_proto.Config, server_obj *Server) http.Handler {
 		// Must be before the Process() call to prevent race.
 		source := message_info.Source
 
+		client_info_manager, err := services.GetClientInfoManager()
+		if err != nil {
+			http.Error(w, "", http.StatusServiceUnavailable)
+			return
+		}
+
+		// If client is not known, make it enrol. This can happen for
+		// example, when the client was just deleted, but we still
+		// have ciphers cached to it - the client is not know but we
+		// can still verify the comms as authenticated. NOTE: this
+		// check should be very quick since it is just a lookup in the
+		// client info manager's LRU.
+		_, err = client_info_manager.Get(source)
+		if err != nil {
+			journal, err := services.GetJournal()
+			if err != nil {
+				http.Error(w, "", http.StatusServiceUnavailable)
+				return
+			}
+
+			// This should triggen an enrollment flow.
+			err = journal.PushRowsToArtifact(config_obj,
+				[]*ordereddict.Dict{
+					ordereddict.NewDict().
+						Set("ClientId", source)},
+				"Server.Internal.Enrollment", source, "")
+			if err != nil {
+				http.Error(w, "", http.StatusServiceUnavailable)
+				return
+			}
+
+			// Do not serve the client until it has fully enrolled.
+			return
+		}
+
 		notifier := services.GetNotifier()
 		if notifier == nil {
 			http.Error(w, "Shutting down", http.StatusServiceUnavailable)
@@ -442,6 +497,15 @@ func reader(config_obj *config_proto.Config, server_obj *Server) http.Handler {
 		}
 
 		if notifier.IsClientDirectlyConnected(source) {
+
+			// Send a message that there is a client conflict.
+			journal, err := services.GetJournal()
+			if err == nil {
+				journal.PushRowsToArtifactAsync(config_obj,
+					ordereddict.NewDict().Set("ClientId", source),
+					"Server.Internal.ClientConflict")
+			}
+
 			http.Error(w, "Another Client connection exists. "+
 				"Only a single instance of the client is "+
 				"allowed to connect at the same time.",
@@ -477,7 +541,7 @@ func reader(config_obj *config_proto.Config, server_obj *Server) http.Handler {
 			true, // drain_requests_for_client
 		)
 		if err != nil {
-			server_obj.Error("Error:", err)
+			server_obj.Error("Error: %v", err)
 			return
 		}
 
@@ -491,6 +555,8 @@ func reader(config_obj *config_proto.Config, server_obj *Server) http.Handler {
 			return
 		}
 
+		// Nothing waiting for the client - wait here for new
+		// notification.
 		for {
 			select {
 			// Figure out when the client drops the
@@ -509,7 +575,7 @@ func reader(config_obj *config_proto.Config, server_obj *Server) http.Handler {
 					true, // drain_requests_for_client
 				)
 				if err != nil {
-					server_obj.Error("Error:", err)
+					server_obj.Error("Error: %v", err)
 					return
 				}
 
@@ -524,11 +590,16 @@ func reader(config_obj *config_proto.Config, server_obj *Server) http.Handler {
 				return
 
 			case <-deadline:
-				// Notify ourselves, this will trigger
-				// an empty response to be written and
-				// the connection to be terminated
-				// (case above).
-				cancel()
+				// Deadline exceeded - write an empty response and
+				// send it. The client will reconnect immediately.
+				_, err := w.Write(serialized_pad)
+				if err != nil {
+					logger.Info("reader: Error %v", err)
+					return
+				}
+
+				flusher.Flush()
+				return
 
 				// Write a pad message every 10 seconds
 				// to keep the conenction alive.

@@ -22,6 +22,10 @@ import (
 	"www.velocidex.com/golang/velociraptor/services"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
 	vfilter "www.velocidex.com/golang/vfilter"
+
+	_ "www.velocidex.com/golang/velociraptor/accessors/file"
+	_ "www.velocidex.com/golang/velociraptor/accessors/ntfs"
+	_ "www.velocidex.com/golang/velociraptor/result_sets/timed"
 )
 
 type TestSuite struct {

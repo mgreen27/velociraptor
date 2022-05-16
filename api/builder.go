@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -299,6 +301,13 @@ func StartFrontendHttps(
 		config_obj.Frontend.BindAddress,
 		config_obj.Frontend.BindPort)
 
+	expected_clients := int64(10000)
+	if config_obj.Frontend != nil &&
+		config_obj.Frontend.Resources != nil &&
+		config_obj.Frontend.Resources.ExpectedClients > 0 {
+		expected_clients = config_obj.Frontend.Resources.ExpectedClients
+	}
+
 	server := &http.Server{
 		Addr:     listenAddr,
 		Handler:  router,
@@ -309,8 +318,9 @@ func StartFrontendHttps(
 		WriteTimeout: 900 * time.Second,
 		IdleTimeout:  150 * time.Second,
 		TLSConfig: &tls.Config{
-			MinVersion:   tls.VersionTLS12,
-			Certificates: certs,
+			MinVersion:         tls.VersionTLS12,
+			ClientSessionCache: tls.NewLRUClientSessionCache(int(expected_clients)),
+			Certificates:       certs,
 			CurvePreferences: []tls.CurveID{tls.CurveP521,
 				tls.CurveP384, tls.CurveP256},
 
@@ -364,7 +374,7 @@ func StartFrontendHttps(
 
 		err := server.Shutdown(time_ctx)
 		if err != nil {
-			server_obj.Error("Frontend server error %v", err)
+			server_obj.Error("Frontend server error during shutdown %v", err)
 		}
 	}()
 
@@ -421,22 +431,8 @@ func StartFrontendPlainHttp(
 		server_obj.Info("<red>Shutting down</> frontend")
 		atomic.StoreInt32(&server_obj.Healthy, 0)
 
-		time_ctx, cancel := context.WithTimeout(
-			context.Background(), 10*time.Second)
-		defer cancel()
-
 		server.SetKeepAlivesEnabled(false)
-		notifier := services.GetNotifier()
-		if notifier != nil {
-			err := notifier.NotifyAllListeners(config_obj)
-			if err != nil {
-				server_obj.Error("Frontend server error %v", err)
-			}
-		}
-		err := server.Shutdown(time_ctx)
-		if err != nil {
-			server_obj.Error("Frontend server error %v", err)
-		}
+		_ = server.Shutdown(ctx)
 	}()
 
 	return nil
@@ -457,7 +453,17 @@ func StartFrontendWithAutocert(
 
 	logger := logging.Manager.GetLogger(config_obj, &logging.GUIComponent)
 
+	// Autocert directory must be unique since it is usually kept in
+	// shared storage.
 	cache_dir := config_obj.AutocertCertCache
+	if config_obj.Frontend.IsMinion {
+		cache_dir = filepath.Join(
+			cache_dir, services.GetNodeName(config_obj.Frontend))
+		err := os.MkdirAll(cache_dir, 0700)
+		if err != nil {
+			return err
+		}
+	}
 	certManager := autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
 		HostPolicy: autocert.HostWhitelist(config_obj.Frontend.Hostname),
@@ -523,10 +529,6 @@ func StartFrontendWithAutocert(
 		defer cancel()
 
 		server.SetKeepAlivesEnabled(false)
-		notifier := services.GetNotifier()
-		if notifier != nil {
-			_ = notifier.NotifyAllListeners(config_obj)
-		}
 		err := server.Shutdown(timeout_ctx)
 		if err != nil {
 			logger.Error("Frontend shutdown error: %v", err)

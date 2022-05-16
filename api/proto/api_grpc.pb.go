@@ -24,6 +24,9 @@ const _ = grpc.SupportPackageIsVersion7
 type APIClient interface {
 	// Hunts
 	CreateHunt(ctx context.Context, in *Hunt, opts ...grpc.CallOption) (*StartFlowResponse, error)
+	// Returns an estimate of the number of clients that might be
+	// affected by a hunt.
+	EstimateHunt(ctx context.Context, in *HuntEstimateRequest, opts ...grpc.CallOption) (*HuntStats, error)
 	ListHunts(ctx context.Context, in *ListHuntsRequest, opts ...grpc.CallOption) (*ListHuntsResponse, error)
 	GetHunt(ctx context.Context, in *GetHuntRequest, opts ...grpc.CallOption) (*Hunt, error)
 	ModifyHunt(ctx context.Context, in *Hunt, opts ...grpc.CallOption) (*empty.Empty, error)
@@ -107,6 +110,8 @@ type APIClient interface {
 	SetSubject(ctx context.Context, in *DataRequest, opts ...grpc.CallOption) (*DataResponse, error)
 	DeleteSubject(ctx context.Context, in *DataRequest, opts ...grpc.CallOption) (*empty.Empty, error)
 	ListChildren(ctx context.Context, in *DataRequest, opts ...grpc.CallOption) (*ListChildrenResponse, error)
+	// Health check protocol as in https://github.com/grpc/grpc/blob/master/doc/health-checking.md
+	Check(ctx context.Context, in *HealthCheckRequest, opts ...grpc.CallOption) (*HealthCheckResponse, error)
 }
 
 type aPIClient struct {
@@ -120,6 +125,15 @@ func NewAPIClient(cc grpc.ClientConnInterface) APIClient {
 func (c *aPIClient) CreateHunt(ctx context.Context, in *Hunt, opts ...grpc.CallOption) (*StartFlowResponse, error) {
 	out := new(StartFlowResponse)
 	err := c.cc.Invoke(ctx, "/proto.API/CreateHunt", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *aPIClient) EstimateHunt(ctx context.Context, in *HuntEstimateRequest, opts ...grpc.CallOption) (*HuntStats, error) {
+	out := new(HuntStats)
+	err := c.cc.Invoke(ctx, "/proto.API/EstimateHunt", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -703,12 +717,24 @@ func (c *aPIClient) ListChildren(ctx context.Context, in *DataRequest, opts ...g
 	return out, nil
 }
 
+func (c *aPIClient) Check(ctx context.Context, in *HealthCheckRequest, opts ...grpc.CallOption) (*HealthCheckResponse, error) {
+	out := new(HealthCheckResponse)
+	err := c.cc.Invoke(ctx, "/proto.API/Check", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // APIServer is the server API for API service.
 // All implementations must embed UnimplementedAPIServer
 // for forward compatibility
 type APIServer interface {
 	// Hunts
 	CreateHunt(context.Context, *Hunt) (*StartFlowResponse, error)
+	// Returns an estimate of the number of clients that might be
+	// affected by a hunt.
+	EstimateHunt(context.Context, *HuntEstimateRequest) (*HuntStats, error)
 	ListHunts(context.Context, *ListHuntsRequest) (*ListHuntsResponse, error)
 	GetHunt(context.Context, *GetHuntRequest) (*Hunt, error)
 	ModifyHunt(context.Context, *Hunt) (*empty.Empty, error)
@@ -792,6 +818,8 @@ type APIServer interface {
 	SetSubject(context.Context, *DataRequest) (*DataResponse, error)
 	DeleteSubject(context.Context, *DataRequest) (*empty.Empty, error)
 	ListChildren(context.Context, *DataRequest) (*ListChildrenResponse, error)
+	// Health check protocol as in https://github.com/grpc/grpc/blob/master/doc/health-checking.md
+	Check(context.Context, *HealthCheckRequest) (*HealthCheckResponse, error)
 	mustEmbedUnimplementedAPIServer()
 }
 
@@ -801,6 +829,9 @@ type UnimplementedAPIServer struct {
 
 func (UnimplementedAPIServer) CreateHunt(context.Context, *Hunt) (*StartFlowResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateHunt not implemented")
+}
+func (UnimplementedAPIServer) EstimateHunt(context.Context, *HuntEstimateRequest) (*HuntStats, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method EstimateHunt not implemented")
 }
 func (UnimplementedAPIServer) ListHunts(context.Context, *ListHuntsRequest) (*ListHuntsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListHunts not implemented")
@@ -979,6 +1010,9 @@ func (UnimplementedAPIServer) DeleteSubject(context.Context, *DataRequest) (*emp
 func (UnimplementedAPIServer) ListChildren(context.Context, *DataRequest) (*ListChildrenResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListChildren not implemented")
 }
+func (UnimplementedAPIServer) Check(context.Context, *HealthCheckRequest) (*HealthCheckResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Check not implemented")
+}
 func (UnimplementedAPIServer) mustEmbedUnimplementedAPIServer() {}
 
 // UnsafeAPIServer may be embedded to opt out of forward compatibility for this service.
@@ -1006,6 +1040,24 @@ func _API_CreateHunt_Handler(srv interface{}, ctx context.Context, dec func(inte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(APIServer).CreateHunt(ctx, req.(*Hunt))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _API_EstimateHunt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HuntEstimateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(APIServer).EstimateHunt(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/proto.API/EstimateHunt",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(APIServer).EstimateHunt(ctx, req.(*HuntEstimateRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2078,6 +2130,24 @@ func _API_ListChildren_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
+func _API_Check_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HealthCheckRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(APIServer).Check(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/proto.API/Check",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(APIServer).Check(ctx, req.(*HealthCheckRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // API_ServiceDesc is the grpc.ServiceDesc for API service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -2088,6 +2158,10 @@ var API_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CreateHunt",
 			Handler:    _API_CreateHunt_Handler,
+		},
+		{
+			MethodName: "EstimateHunt",
+			Handler:    _API_EstimateHunt_Handler,
 		},
 		{
 			MethodName: "ListHunts",
@@ -2316,6 +2390,10 @@ var API_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListChildren",
 			Handler:    _API_ListChildren_Handler,
+		},
+		{
+			MethodName: "Check",
+			Handler:    _API_Check_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -26,20 +26,19 @@ parameters:
 precondition: SELECT OS From info() where OS = 'windows'
 
 sources:
-  - queries:
-      - |
+  - query: |
         LET cookie_files = SELECT * from foreach(
           row={
-             SELECT Uid, Name AS User, Directory
+             SELECT Uid, Name AS User,
+                    expand(path=Directory) AS HomeDirectory
              FROM Artifact.Windows.Sys.Users()
              WHERE Name =~ userRegex
           },
           query={
-             SELECT User, FullPath, Mtime from glob(
-               globs=Directory + cookieGlobs)
+             SELECT User, OSPath, Mtime
+             FROM glob(root=HomeDirectory, globs=cookieGlobs)
           })
 
-      - |
         SELECT * FROM foreach(row=cookie_files,
           query={
             SELECT timestamp(winfiletime=creation_utc * 10) as Created,

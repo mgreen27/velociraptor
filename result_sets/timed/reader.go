@@ -12,6 +12,7 @@ import (
 	"www.velocidex.com/golang/velociraptor/paths"
 	"www.velocidex.com/golang/velociraptor/result_sets"
 	"www.velocidex.com/golang/velociraptor/timelines"
+	"www.velocidex.com/golang/velociraptor/utils"
 )
 
 // Timed result sets are stored as regular result sets in rotated logs
@@ -158,9 +159,12 @@ func (self *TimedResultSetReader) maybeUpgradeIndex(
 	new_path := path_manager.Path().
 		SetType(api.PATH_TYPE_FILESTORE_TMP)
 	tmp_path_manager := paths.NewTimelinePathManager("", new_path)
+
+	// Write the tmp file synchronously and then read it again with
+	// the benefit of the index.
 	tmp_writer, err := timelines.NewTimelineWriter(
 		self.file_store_factory, tmp_path_manager,
-		true /* truncate */)
+		utils.SyncCompleter, result_sets.TruncateMode)
 	if err != nil {
 		return nil, err
 	}

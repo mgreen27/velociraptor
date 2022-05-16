@@ -1,4 +1,4 @@
-// These are the messages used in client actions.
+// This file represents the configuration file schema.
 syntax = "proto3";
 
 import "proto/semantic.proto";
@@ -33,6 +33,10 @@ message Version {
     string build_time = 5 [(sem_type) = {
             description: "When the client was built."
         }];
+
+    string ci_build_url = 6;
+
+    string compiler = 7;
 }
 
 // The client's state which are persisted in the writeback file.
@@ -145,7 +149,6 @@ message ClientConfig {
     string tempdir_windows = 2;
     string tempdir_darwin = 3;
 
-
     uint64 max_poll = 15 [(sem_type) = {
             description: "The maximum number of seconds between server polls."
             default: "600",
@@ -198,6 +201,12 @@ message ClientConfig {
 
     // Maximum number of concurrent queries the client will allow (default 2).
     uint64 concurrency = 31;
+
+    // Maximum timeout for connection retry - the length of time we
+    // try a connection before restarting it (default 5 min).
+    uint64 connection_timeout = 35;
+
+    CryptoConfig Crypto = 33;
 }
 
 message APIConfig {
@@ -262,6 +271,10 @@ message Authenticator {
     string oidc_issuer = 4 [(sem_type) = {
             description: "URL to OIDC Configuration Document. The configuration should be available in the 'oidc_issuer + /.well-known/openid-configuration' endpoint. ",
         }];
+    string oidc_name = 18;
+
+    // Can be an img src for the avatar
+    string avatar = 19;
     string oauth_client_id = 5 [(sem_type) = {
             description: "If set we use oauth authentication flow.",
         }];
@@ -288,6 +301,9 @@ message Authenticator {
     string saml_user_attribute = 16 [(sem_type) = {
             description: "SAML attribute containing value for user identification."
         }];
+
+    // MultiAuthenticator delegates to multiple other authenticators.
+    repeated Authenticator sub_authenticators = 17;
 }
 
 message GUIConfig {
@@ -422,13 +438,13 @@ message FrontendResourceControl {
     // Aim for this heap size (default 2Gb). If actual memory usage
     // approaches this maximum, the frontend will begin to limit
     // client connections.
+    // DEPRECATED
     uint64 target_heap_size = 10;
 
     // The maximum time a client will be waiting for a concurrency
     // slot before timing out. A small value will result in many
     // reconnections under load.
     uint64 concurrency_timeout = 24;
-
 
     // Increasing this allows the frontend to receive larger POST
     // messages lowering crypto overheads but this comes at the
@@ -438,9 +454,9 @@ message FrontendResourceControl {
         }];
 
     // This setting controls the size of various LRU caches in the
-    // fronend (e.g. the session key cache). This number should be
-    // larger than the number of actual clients or else the system
-    // will see high CPU load from cache misses.
+    // frontend (e.g. the session key cache, client info cache). This
+    // number should be larger than the number of actual clients or
+    // else the system will see high CPU load from cache misses.
     int64 expected_clients = 15 [(sem_type) = {
             description: "Expected number of clients in this deployment (default 10000)",
         }];
@@ -453,6 +469,32 @@ message FrontendResourceControl {
     // less latency to respond to client events but also means more
     // TLS handshake and network overheads due to frequent POST.
     uint64 client_event_max_wait = 23;
+
+    // Minions batch updates to the master so as to minimize RPC as
+    // much as possible, this controls how often these batches are
+    // flushed to the master (default 10 sec).
+    uint64 minion_batch_wait_time_ms = 25;
+
+    // How often to save an index snapshot to storage (default 600
+    // sec). Index files are typically 150kb / 1000 clients.
+    uint64 index_snapshot_frequency = 26;
+
+    // Number of seconds before expiring client info cache
+    // entries. Default (0) means do not expire at all. Expiring
+    // client info from cache too frequently can result in a lot more
+    // IO. Default size of this cache is the expected_clients above.
+    uint64 client_info_lru_ttl = 27;
+
+    // How often to sync client info records (ms)
+    uint64 client_info_sync_time = 29;
+    uint64 client_info_write_time = 30;
+
+    // The journal files are used to queue messages between event
+    // generators and event consumers when the consumer is unable to
+    // drain these quickly enough. The setting specifies the maximum
+    // size of the file - when it is exceeded, the file will be
+    // truncated and events will be lost. Default is 1gb
+    int64 max_journal_buffer_size = 28;
 }
 
 
@@ -538,6 +580,10 @@ message FrontendConfig {
             description: "Additional initial set of server monitoring artifacts."
         }];
 
+    // If set this will cause the frontend to collect these artifacts
+    // the first time it is run after install.
+    repeated string initial_server_artifacts = 34;
+
     string run_as_user = 16 [(sem_type) = {
             description: "The user that the frontend should run as. If set we refuse to run as a different user.",
         }];
@@ -552,7 +598,7 @@ message FrontendConfig {
     FrontendResourceControl resources = 27;
 
     // Used internally to tag this frontend as the master.
-    bool is_master = 30;
+    bool is_minion = 30;
 
     // DEPRECATED ****************************************************
 
@@ -582,10 +628,13 @@ message FrontendConfig {
     // Load artifacts from this directory at startup
     string artifact_definitions_directory = 32;
 
+    // A regular expression that if matches any log messages from the
+    // client's query represent a failure of the collection.
+    string collection_error_regex = 35;
+
     // DEPRECATED - ignored.
     bool do_not_redirect = 26;
 }
-
 
 message DatastoreConfig {
     // The name of the datastore implementation to use.
@@ -614,14 +663,43 @@ message DatastoreConfig {
     string location = 2;
     string filestore_directory = 3;
 
+    // Cap directories to this size after reporting error - this
+    // should not happen normally but may happen if the deployment has
+    // been very active or due to a bug!
+    uint64 max_dir_size = 13;
+
     // How long to expire the memcache (default 10 min)
     uint64 memcache_expiration_sec = 4;
 
+    // How many mutations to queue up ahead of busy writers. By
+    // default 0 means writes will be blocked until they are handed
+    // off to a writer thread. Set to -1 to disable asynchronous
+    // writes.
     int64 memcache_write_mutation_buffer = 5;
 
     // Number of writing threads - increase for high latency
-    // filesystems.
+    // filesystems (default 100).
     int64 memcache_write_mutation_writers = 6;
+
+    // How long to delay writes so they can be combined. This applies
+    // for writing result sets - we keep the writes in memory for
+    // min_age seconds in order to combine further writes. If another
+    // write occurs to the same result sets the TTL is extended and
+    // writes are delayed. However, once we read max_age, a write is
+    // forced. The aim is to keep combine separate writes as much as
+    // possible into larger writes but at the same time keep
+    // frequently written files from never flushing to disk.
+    int64 memcache_write_mutation_min_age = 14; // Default 1000 msec
+    int64 memcache_write_mutation_max_age = 9;  // Default 5000 msec
+
+    // Maximum size of memcache lru (default 10000)
+    int64 memcache_datastore_max_size = 10;
+    int64 memcache_datastore_max_item_size = 11;
+    int64 memcache_datastore_max_dir_size = 12;
+
+    // Experimental - do not set in configs yet!
+    string minion_implementation = 7;
+    string master_implementation = 8;
 }
 
 // Configuration for the mail server.
@@ -714,11 +792,56 @@ message ServerServicesConfig {
    bool api_server = 13;
    bool frontend_server = 14;
    bool gui_server = 15;
+   bool index_server = 16;
 }
 
 message Defaults {
     int64 hunt_expiry_hours = 1;
     int64 notebook_cell_timeout_min = 2;
+
+    // The default CSV delimiter
+    string csv_delimiter = 3;
+}
+
+// Configures crypto preferences
+message CryptoConfig {
+    // Include these root CA's to verify certificates (in addition to
+    // built in CA's). Certs should be concatenated in PEM format.
+    string root_certs = 1;
+}
+
+message MountPoint {
+    string accessor = 1;
+    string prefix = 2;
+    string path_type = 3;
+}
+
+message RemappingConfig {
+    // Operation: Currently mount, identify
+    string type = 1;
+
+    // Human readable description of what this mapping rule should
+    // produce.
+    string description = 10;
+
+    // For mount options
+    MountPoint from = 2;
+    MountPoint on = 3;
+
+    // For type=permissions - permissions come from acls/acls.go
+    repeated string permissions = 4;
+
+    // For type=impersonation - can be windows, linux, darwin
+    string os = 5;
+    string hostname = 6;
+
+    // Variables to be added to environment strings.
+    repeated VQLEnv env = 7;
+
+    // Disable these plugins and functions (usually for OS specific
+    // things that make no sense on an image).
+    repeated string disabled_functions = 8;
+    repeated string disabled_plugins = 9;
 }
 
 message Config {
@@ -749,10 +872,11 @@ message Config {
 
     DatastoreConfig Datastore = 6;
 
-    Writeback Writeback = 9 [(sem_type) = {
-            description: "Contents of the client's state as stored in the writeback file."
-        }];
+    // Deprecated - Should not appear in new configs and will be
+    // ignored. It is only here for backwards compatibility.
+    Writeback Writeback = 9 [deprecated=true];
 
+    // Deprecated - Mail plugin setting are now provided by args.
     MailConfig Mail = 11;
 
     LoggingConfig Logging = 23;
@@ -786,5 +910,15 @@ message Config {
     // If set we obfuscate VQL to the clients using this key.
     string obfuscation_nonce = 32;
 
+    // Various defaults can be changed here (usually not needed).
     Defaults defaults = 33;
+
+    // The Operating System of the analysis target. Only useful in conjunction
+    // with the `device' parameter in case the host's operating system differs
+    // from the operating system used on the device.
+    string analysis_target = 34;
+
+    // The list of data sources which Velociraptor should map instead of the
+    // host's own file system.
+    repeated RemappingConfig remappings = 35;
 }

@@ -2,24 +2,24 @@ package sanity
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"google.golang.org/protobuf/proto"
 	"www.velocidex.com/golang/velociraptor/acls"
 	api_proto "www.velocidex.com/golang/velociraptor/api/proto"
+	artifacts_proto "www.velocidex.com/golang/velociraptor/artifacts/proto"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/datastore"
 	"www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/paths"
 	"www.velocidex.com/golang/velociraptor/reporting"
 	"www.velocidex.com/golang/velociraptor/services"
-	"www.velocidex.com/golang/velociraptor/users"
 	"www.velocidex.com/golang/velociraptor/utils"
 )
 
@@ -39,57 +39,23 @@ func (self *SanityChecks) Check(
 		}
 	}
 
-	logger := logging.GetLogger(config_obj, &logging.FrontendComponent)
-
 	// Make sure the initial user accounts are created with the
 	// administrator roles.
 	if config_obj.GUI != nil && config_obj.GUI.Authenticator != nil {
-		for _, user := range config_obj.GUI.InitialUsers {
-			user_record, err := users.GetUser(config_obj, user.Name)
-			if err != nil || user_record.Name != user.Name {
-				logger.Info("Initial user %v not present, creating", user.Name)
-				new_user, err := users.NewUserRecord(user.Name)
-				if err != nil {
-					return err
-				}
+		err := createInitialUsers(config_obj, config_obj.GUI.InitialUsers)
+		if err != nil {
+			return err
+		}
+	}
 
-				// Basic auth requires setting hashed
-				// password and salt
-				switch strings.ToLower(config_obj.GUI.Authenticator.Type) {
-				case "basic":
-					new_user.PasswordHash, err = hex.DecodeString(user.PasswordHash)
-					if err != nil {
-						return err
-					}
-					new_user.PasswordSalt, err = hex.DecodeString(user.PasswordSalt)
-					if err != nil {
-						return err
-					}
-
-					// All other auth methods do
-					// not need a password set, so
-					// generate a random one
-				default:
-					password := make([]byte, 100)
-					_, err = rand.Read(password)
-					if err != nil {
-						return err
-					}
-					users.SetPassword(new_user, string(password))
-				}
-
-				// Create the new user.
-				err = users.SetUser(config_obj, new_user)
-				if err != nil {
-					return err
-				}
-
-				// Give them the administrator roles
-				err = acls.GrantRoles(config_obj, user.Name, []string{"administrator"})
-				if err != nil {
-					return err
-				}
-			}
+	// Make sure our internal VelociraptorServer service account is
+	// properly created.
+	if config_obj.Client != nil && config_obj.Client.PinnedServerName != "" {
+		service_account_name := config_obj.Client.PinnedServerName
+		err := acls.GrantRoles(
+			config_obj, service_account_name, []string{"administrator"})
+		if err != nil {
+			return err
 		}
 	}
 
@@ -103,6 +69,14 @@ func (self *SanityChecks) Check(
 			config_obj.Frontend.DynDns != nil &&
 			config_obj.Frontend.DynDns.Hostname != "" {
 			config_obj.Frontend.Hostname = config_obj.Frontend.DynDns.Hostname
+		}
+
+		if config_obj.Frontend.CollectionErrorRegex != "" {
+			_, err := regexp.Compile(config_obj.Frontend.CollectionErrorRegex)
+			if err != nil {
+				return fmt.Errorf(
+					"Frontend.collection_error_regex is invalid: %w", err)
+			}
 		}
 	}
 
@@ -137,6 +111,11 @@ func (self *SanityChecks) Check(
 	}
 
 	err = maybeMigrateClientIndex(ctx, config_obj)
+	if err != nil {
+		return err
+	}
+
+	err = maybeStartInitialArtifacts(ctx, config_obj)
 	if err != nil {
 		return err
 	}
@@ -266,6 +245,9 @@ func checkForServerUpgrade(
 					logger.WithFields(logrus.Fields{
 						"Tool": tool_definition,
 					}).Info("Upgrading tool <red>" + tool_definition.Name)
+
+					tool_definition = proto.Clone(
+						tool_definition).(*artifacts_proto.Tool)
 
 					// Re-add the tool to force
 					// hashes to be taken when the

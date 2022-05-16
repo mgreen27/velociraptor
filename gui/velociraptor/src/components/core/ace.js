@@ -83,6 +83,7 @@ import VqlMode from './mode-vql.js';
 import MarkdownMode from './mode-markdown.js';
 import YamlMode from './mode-yaml.js';
 import RegexMode from './mode-regex.js';
+import YaraMode from './mode-yara.js';
 import classNames from "classnames";
 
 import Button from 'react-bootstrap/Button';
@@ -92,7 +93,6 @@ import UserConfig from './user.js';
 
 import api from '../core/api-service.js';
 import axios from 'axios';
-
 
 
 export class SettingsButton extends Component {
@@ -207,6 +207,8 @@ export default class VeloAce extends Component {
                 this.refs.ace.editor.getSession().setMode(new YamlMode());
             } else if(this.props.mode === "regex") {
                 this.refs.ace.editor.getSession().setMode(new RegexMode());
+            } else if(this.props.mode === "yara") {
+                this.refs.ace.editor.getSession().setMode(new YaraMode());
             }
         };
     }
@@ -217,12 +219,14 @@ export default class VeloAce extends Component {
         let options = this.getUserOptions();
         let mode = this.props.mode || 'sql';
         let focus = this.props.focus;
+
         if (_.isUndefined(focus)) {
             focus = true;
         }
         return (
             <>
-              <div className={classNames(
+              <div
+                className={classNames(
                   "col-12",
                   "velo-ace-editor",
                   this.props.className)}>
@@ -233,6 +237,7 @@ export default class VeloAce extends Component {
                   focus={focus}
                   mode={mode}
                   theme="github"
+                  placeholder={this.props.placeholder}
                   value={this.props.text || ''}
                   onChange={this.props.onChange}
                   style={

@@ -9,7 +9,6 @@
 package directory
 
 /*
-
   This file store implementation stores files on disk. All of these
   functions receive serialized Velociraptor's VFS paths.
 
@@ -34,25 +33,11 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
+	file_store_accessor "www.velocidex.com/golang/velociraptor/accessors/file_store"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
-	"www.velocidex.com/golang/velociraptor/file_store/accessors"
 	"www.velocidex.com/golang/velociraptor/file_store/api"
 	logging "www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/utils"
-)
-
-var (
-	openCounter = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "file_store_open",
-		Help: "Total number of filestore open operations.",
-	})
-
-	listCounter = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "file_store_list",
-		Help: "Total number of filestore list children operations.",
-	})
 )
 
 const (
@@ -62,7 +47,8 @@ const (
 )
 
 type DirectoryFileWriter struct {
-	Fd *os.File
+	Fd         *os.File
+	completion func()
 }
 
 func (self *DirectoryFileWriter) Size() (int64, error) {
@@ -70,6 +56,9 @@ func (self *DirectoryFileWriter) Size() (int64, error) {
 }
 
 func (self *DirectoryFileWriter) Write(data []byte) (int, error) {
+
+	defer api.InstrumentWithDelay("write", "DirectoryFileWriter", nil)()
+
 	_, err := self.Fd.Seek(0, os.SEEK_END)
 	if err != nil {
 		return 0, err
@@ -82,8 +71,17 @@ func (self *DirectoryFileWriter) Truncate() error {
 	return self.Fd.Truncate(0)
 }
 
+func (self *DirectoryFileWriter) Flush() error { return nil }
+
 func (self *DirectoryFileWriter) Close() error {
-	return self.Fd.Close()
+	err := self.Fd.Close()
+
+	// DirectoryFileWriter is synchronous... complete on Close()
+	if self.completion != nil &&
+		!utils.CompareFuncs(self.completion, utils.SyncCompleter) {
+		self.completion()
+	}
+	return err
 }
 
 type DirectoryFileStore struct {
@@ -101,10 +99,14 @@ func (self *DirectoryFileStore) Move(src, dest api.FSPathSpec) error {
 	return os.Rename(src_path, dest_path)
 }
 
+func (self *DirectoryFileStore) Close() error {
+	return nil
+}
+
 func (self *DirectoryFileStore) ListDirectory(dirname api.FSPathSpec) (
 	[]api.FileInfo, error) {
 
-	listCounter.Inc()
+	defer api.InstrumentWithDelay("list", "DirectoryFileStore", dirname)()
 
 	file_path := dirname.AsFilestoreDirectory(self.config_obj)
 	files, err := utils.ReadDir(file_path)
@@ -124,7 +126,7 @@ func (self *DirectoryFileStore) ListDirectory(dirname api.FSPathSpec) (
 		}
 
 		name_type, name := api.GetFileStorePathTypeFromExtension(name)
-		result = append(result, accessors.NewFileStoreFileInfo(
+		result = append(result, file_store_accessor.NewFileStoreFileInfo(
 			self.config_obj,
 			dirname.AddChild(
 				utils.UnsanitizeComponent(name)).
@@ -138,7 +140,9 @@ func (self *DirectoryFileStore) ListDirectory(dirname api.FSPathSpec) (
 func (self *DirectoryFileStore) ReadFile(
 	filename api.FSPathSpec) (api.FileReader, error) {
 	file_path := filename.AsFilestoreFilename(self.config_obj)
-	openCounter.Inc()
+
+	defer api.InstrumentWithDelay("open_read", "DirectoryFileStore", filename)()
+
 	file, err := os.Open(file_path)
 	if err != nil {
 		return nil, errors.WithStack(err)
@@ -151,19 +155,34 @@ func (self *DirectoryFileStore) ReadFile(
 
 func (self *DirectoryFileStore) StatFile(
 	filename api.FSPathSpec) (api.FileInfo, error) {
+
+	defer api.Instrument("stat", "DirectoryFileStore", filename)()
+
 	file_path := filename.AsFilestoreFilename(self.config_obj)
 	file, err := os.Stat(file_path)
 	if err != nil {
 		return nil, err
 	}
 
-	return &accessors.FileStoreFileInfo{
+	return &file_store_accessor.FileStoreFileInfo{
 		FileInfo: file,
 	}, nil
 }
 
 func (self *DirectoryFileStore) WriteFile(
 	filename api.FSPathSpec) (api.FileWriter, error) {
+	if strings.Contains(filename.AsClientPath(), "Generic.Client.Stats") {
+		utils.DlvBreak()
+	}
+
+	return self.WriteFileWithCompletion(filename, nil)
+}
+
+func (self *DirectoryFileStore) WriteFileWithCompletion(
+	filename api.FSPathSpec, completion func()) (api.FileWriter, error) {
+
+	defer api.InstrumentWithDelay("open_write", "DirectoryFileStore", filename)()
+
 	file_path := filename.AsFilestoreFilename(self.config_obj)
 	err := os.MkdirAll(filepath.Dir(file_path), 0700)
 	if err != nil {
@@ -172,7 +191,6 @@ func (self *DirectoryFileStore) WriteFile(
 		return nil, err
 	}
 
-	openCounter.Inc()
 	file, err := os.OpenFile(file_path, os.O_RDWR|os.O_CREATE, 0700)
 	if err != nil {
 		logger := logging.GetLogger(self.config_obj, &logging.FrontendComponent)
@@ -181,10 +199,16 @@ func (self *DirectoryFileStore) WriteFile(
 		return nil, errors.WithStack(err)
 	}
 
-	return &DirectoryFileWriter{file}, nil
+	return &DirectoryFileWriter{
+		Fd:         file,
+		completion: completion,
+	}, nil
 }
 
 func (self *DirectoryFileStore) Delete(filename api.FSPathSpec) error {
+
+	defer api.InstrumentWithDelay("delete", "DirectoryFileStore", filename)()
+
 	file_path := filename.AsFilestoreFilename(self.config_obj)
 	err := os.Remove(file_path)
 	if err != nil {
@@ -207,30 +231,5 @@ func (self *DirectoryFileStore) Delete(filename api.FSPathSpec) error {
 	}
 
 	// At least we succeeded deleting the file
-	return nil
-}
-
-func (self *DirectoryFileStore) Walk(root api.FSPathSpec, walkFn api.WalkFunc) error {
-	// Walking a non-existant directory just returns no results.
-	children, err := self.ListDirectory(root)
-	if err != nil {
-		return nil
-	}
-
-	for _, child := range children {
-		if child.IsDir() {
-			err = self.Walk(child.PathSpec(), walkFn)
-			if err != nil {
-				return err
-			}
-			continue
-		}
-
-		if strings.HasSuffix(child.Name(), ".db") {
-			continue
-		}
-
-		walkFn(child.PathSpec(), child)
-	}
 	return nil
 }

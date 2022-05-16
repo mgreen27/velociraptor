@@ -15,6 +15,8 @@ import (
 	"www.velocidex.com/golang/velociraptor/file_store/api"
 	"www.velocidex.com/golang/velociraptor/file_store/test_utils"
 	"www.velocidex.com/golang/velociraptor/paths"
+	"www.velocidex.com/golang/velociraptor/result_sets"
+	"www.velocidex.com/golang/velociraptor/utils"
 )
 
 type TimelineTestSuite struct {
@@ -96,15 +98,24 @@ func (self *TimelineTestSuite) TestTimelineWriter() {
 		SuperTimeline("T.1234").GetChild("Test")
 
 	file_store_factory := file_store.GetFileStore(self.config_obj)
-	timeline, err := NewTimelineWriter(file_store_factory, path_manager, true /* truncate */)
+	timeline, err := NewTimelineWriter(file_store_factory, path_manager,
+		utils.SyncCompleter, result_sets.TruncateMode)
 	assert.NoError(self.T(), err)
 
+	total_rows := 0
 	for i := int64(0); i <= 10; i++ {
 		timeline.Write(time.Unix(i*2, 0), ordereddict.NewDict().Set("Item", i*2))
+		total_rows++
 	}
 	timeline.Close()
 
-	//	test_utils.GetMemoryFileStore(self.T(), self.config_obj).Debug()
+	// Make sure the index is correct. Each IndexRecord is 3 * 8 bytes
+	// = 24 and there should be exactly one record for each row.
+	index_data := test_utils.FileReadAll(self.T(), self.config_obj,
+		path_manager.Index())
+	assert.Equal(self.T(), len(index_data), total_rows*24)
+
+	//test_utils.GetMemoryFileStore(self.T(), self.config_obj).Debug()
 
 	reader, err := NewTimelineReader(file_store_factory, path_manager)
 	assert.NoError(self.T(), err)

@@ -2,6 +2,7 @@ package http_comms
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -40,6 +41,7 @@ type TestSuite struct {
 	config_obj *config_proto.Config
 	client_id  string
 	sm         *services.Service
+	port       int
 }
 
 func (self *TestSuite) SetupTest() {
@@ -47,15 +49,17 @@ func (self *TestSuite) SetupTest() {
 
 	config_obj, err := new(config.Loader).WithFileLoader(
 		"../http_comms/test_data/server.config.yaml").
-		WithRequiredClient().WithWriteback().LoadAndValidate()
+		WithRequiredClient().WithVerbose(true).
+		WithWriteback().LoadAndValidate()
+	assert.NoError(t, err)
+
+	self.port, err = vtesting.GetFreePort()
 	assert.NoError(t, err)
 
 	self.config_obj = config_obj
 
 	ctx, _ := context.WithTimeout(context.Background(), time.Second*60)
 	self.sm = services.NewServiceManager(ctx, self.config_obj)
-
-	self.config_obj.Frontend.IsMaster = true
 
 	// Start the journaling service manually for tests.
 	require.NoError(t, self.sm.Start(journal.StartJournalService))
@@ -121,7 +125,8 @@ func (self *TestSuite) makeServer(
 
 	// Wait for it to come up
 	vtesting.WaitUntil(2*time.Second, self.T(), func() bool {
-		req, err := http.Get("http://localhost:8000/server.pem")
+		url := fmt.Sprintf("http://localhost:%d/server.pem", self.port)
+		req, err := http.Get(url)
 		if err != nil || req.StatusCode != http.StatusOK {
 			return false
 		}
@@ -144,26 +149,28 @@ func (self *TestSuite) makeClient(
 
 	on_error := func() {}
 	comm, err := NewHTTPCommunicator(
+		client_ctx,
 		self.config_obj,
 		manager,
 		exe,
-		[]string{"http://localhost:8000/"},
+		[]string{fmt.Sprintf("http://localhost:%d/", self.port)},
 		on_error, utils.RealClock{},
 	)
 	assert.NoError(self.T(), err)
 
 	client_wg.Add(1)
-	go func() {
-		defer client_wg.Done()
-
-		comm.Run(client_ctx)
-	}()
+	go comm.Run(client_ctx, client_wg)
 
 	return comm
 }
 
 func (self *TestSuite) TestServerRotateKeyE2E() {
 	logging.ClearMemoryLogs()
+
+	self.config_obj.Frontend.BindPort = uint32(self.port)
+	self.config_obj.Client.ServerUrls = []string{
+		fmt.Sprintf("http://localhost:%d", self.port),
+	}
 
 	server_ctx, server_cancel := context.WithCancel(self.sm.Ctx)
 	server_wg := &sync.WaitGroup{}
@@ -175,16 +182,18 @@ func (self *TestSuite) TestServerRotateKeyE2E() {
 
 	comm := self.makeClient(client_ctx, client_wg)
 
-	// Stop the receive and send loops to prevent race with direct post
-	comm.SetPause(true)
-
 	// Make sure the client is properly enrolled
 	vtesting.WaitUntil(2*time.Second, self.T(), func() bool {
 		err := comm.sender.sendToURL(client_ctx, [][]byte{}, false)
 		assert.NoError(self.T(), err)
 
-		return vtesting.ContainsString("response with status: 200", logging.GetMemoryLogs())
+		return vtesting.ContainsString("response with status: 200",
+			logging.GetMemoryLogs())
 	})
+
+	// Stop the receive and send loops to prevent race with direct post
+	comm.SetPause(true)
+
 	//	json.Dump(logging.GetMemoryLogs())
 	logging.ClearMemoryLogs()
 
@@ -204,20 +213,9 @@ func (self *TestSuite) TestServerRotateKeyE2E() {
 	server_ctx, server_cancel = context.WithCancel(self.sm.Ctx)
 	server_wg = &sync.WaitGroup{}
 
-	self.makeServer(server_ctx, server_wg)
-
 	logging.ClearMemoryLogs()
 
-	// Sending another one will produce an error.
-	vtesting.WaitUntil(2*time.Second, self.T(), func() bool {
-		err := comm.sender.sendToURL(client_ctx, [][]byte{}, false)
-		if err == nil {
-			// No error yet - retry
-			return false
-		}
-
-		return vtesting.ContainsString("Unable to decrypt body", logging.GetMemoryLogs())
-	})
+	self.makeServer(server_ctx, server_wg)
 
 	// Make sure the client properly rekeys and continues to talk to the server
 	vtesting.WaitUntil(2*time.Second, self.T(), func() bool {
@@ -226,7 +224,11 @@ func (self *TestSuite) TestServerRotateKeyE2E() {
 			return false
 		}
 
-		return vtesting.ContainsString("response with status: 200", logging.GetMemoryLogs())
+		// Make sure the client rekeys and connects successfully.
+		return vtesting.ContainsString("response with status: 200",
+			logging.GetMemoryLogs()) &&
+			vtesting.ContainsString("Received PEM for VelociraptorServer",
+				logging.GetMemoryLogs())
 	})
 
 	// Done

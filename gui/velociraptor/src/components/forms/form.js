@@ -7,16 +7,17 @@ import Row from 'react-bootstrap/Row';
 import Col from 'react-bootstrap/Col';
 import Button from 'react-bootstrap/Button';
 import RegEx from './regex.js';
-
+import UploadFileForm from './upload.js';
+import YaraEditor from './yara.js';
 import Tooltip from 'react-bootstrap/Tooltip';
 import OverlayTrigger from 'react-bootstrap/OverlayTrigger';
 import ButtonGroup from 'react-bootstrap/ButtonGroup';
-
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 
 import BootstrapTable from 'react-bootstrap-table-next';
 import cellEditFactory, { Type } from 'react-bootstrap-table2-editor';
 import { parseCSV, serializeCSV } from '../utils/csv.js';
+import "./validated.css";
 
 const numberRegex = RegExp("^[0-9]+$");
 
@@ -73,6 +74,29 @@ export default class VeloForm extends React.Component {
         timestamp: null,
     }
 
+    setValueWithValidator = (value, validator)=>{
+        let invalid = false;
+        if (validator) {
+            try {
+                // Not multi line match because the regex would
+                // typically anchor to the start and end of the entire
+                // string.
+                const regexp = new RegExp(validator, 'is');
+                if (_.isEmpty(value)) {
+                    invalid = false;
+                } else if (regexp.test(value)) {
+                    invalid = false;
+                } else {
+                    invalid = true;
+                }
+
+                this.setState({invalid: invalid});
+            } catch(e){
+                console.log(e);
+            }
+        }
+        this.props.setValue(value);
+    }
 
     render() {
         let param = this.props.param;
@@ -201,6 +225,27 @@ export default class VeloForm extends React.Component {
                 </Form.Group>
             );
 
+        case "yara":
+            return (
+                  <Form.Group as={Row}>
+                  <Form.Label column sm="3">
+                    <OverlayTrigger
+                      delay={{show: 250, hide: 400}}
+                      overlay={(props)=>renderToolTip(props, param)}>
+                      <div>
+                        {name}
+                      </div>
+                    </OverlayTrigger>
+                  </Form.Label>
+                    <Col sm="8">
+                      <YaraEditor
+                        value={this.props.value}
+                        setValue={this.props.setValue}
+                      />
+                  </Col>
+                </Form.Group>
+            );
+
         case "timestamp":
             // value prop is always a string in ISO format in UTC timezone.
             let date = convertToDate(this.props.value);
@@ -317,6 +362,12 @@ export default class VeloForm extends React.Component {
                 </Form.Group>
             );
 
+        case "upload":
+            return <UploadFileForm
+                     param={this.props.param}
+                     value={this.props.value}
+                     setValue={this.props.setValue}
+                   />;
         default:
             return (
                   <Form.Group as={Row}>
@@ -331,9 +382,13 @@ export default class VeloForm extends React.Component {
                   </Form.Label>
                   <Col sm="8">
                     <Form.Control as="textarea"
+                                  placeholder={this.props.param.description}
+                                  className={ this.state.invalid && 'invalid' }
                                   rows={1}
                                   onChange={(e) => {
-                                      this.props.setValue(e.currentTarget.value);
+                                      this.setValueWithValidator(
+                                          e.currentTarget.value,
+                                          this.props.param.validating_regex);
                                   }}
                                   value={this.props.value} />
                   </Col>

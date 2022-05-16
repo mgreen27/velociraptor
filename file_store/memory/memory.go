@@ -6,16 +6,15 @@ import (
 	"io"
 	"os"
 	"path"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 
 	"github.com/Velocidex/ordereddict"
-	"github.com/pkg/errors"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/file_store/api"
 	"www.velocidex.com/golang/velociraptor/file_store/path_specs"
+	"www.velocidex.com/golang/velociraptor/utils"
 	"www.velocidex.com/golang/velociraptor/vtesting"
 )
 
@@ -55,6 +54,8 @@ type MemoryReader struct {
 }
 
 func (self *MemoryReader) Read(buf []byte) (int, error) {
+	defer api.InstrumentWithDelay("read", "MemoryReader", nil)()
+
 	fs_buf, pres := self.memory_file_store.Get(self.filename)
 	if !pres {
 		return 0, os.ErrNotExist
@@ -92,6 +93,8 @@ func (self *MemoryReader) Close() error {
 }
 
 func (self *MemoryReader) Stat() (api.FileInfo, error) {
+	defer api.InstrumentWithDelay("stat", "MemoryReader", nil)()
+
 	fs_buf, pres := self.memory_file_store.Get(self.filename)
 	if !pres {
 		return nil, os.ErrNotExist
@@ -110,6 +113,7 @@ type MemoryWriter struct {
 	memory_file_store *MemoryFileStore
 	filename          string
 	closed            bool
+	completion        func()
 }
 
 func (self *MemoryWriter) Size() (int64, error) {
@@ -117,15 +121,25 @@ func (self *MemoryWriter) Size() (int64, error) {
 }
 
 func (self *MemoryWriter) Write(data []byte) (int, error) {
+	defer api.InstrumentWithDelay("write", "MemoryReader", nil)()
+
 	self.buf = append(self.buf, data...)
 	return len(data), nil
 }
+
+func (self *MemoryWriter) Flush() error { return nil }
 
 func (self *MemoryWriter) Close() error {
 	if self.closed {
 		panic("MemoryWriter already closed")
 	}
 	self.closed = true
+
+	// MemoryWriter is actually synchronous... Complete on close.
+	if self.completion != nil &&
+		!utils.CompareFuncs(self.completion, utils.SyncCompleter) {
+		defer self.completion()
+	}
 
 	self.memory_file_store.mu.Lock()
 	defer self.memory_file_store.mu.Unlock()
@@ -135,6 +149,8 @@ func (self *MemoryWriter) Close() error {
 }
 
 func (self *MemoryWriter) Truncate() error {
+	defer api.InstrumentWithDelay("truncate", "MemoryReader", nil)()
+
 	self.buf = nil
 	return nil
 }
@@ -174,6 +190,8 @@ func (self *MemoryFileStore) DebugString() string {
 }
 
 func (self *MemoryFileStore) ReadFile(path api.FSPathSpec) (api.FileReader, error) {
+	defer api.InstrumentWithDelay("read_open", "MemoryFileStore", nil)()
+
 	self.mu.Lock()
 	defer self.mu.Unlock()
 
@@ -188,10 +206,18 @@ func (self *MemoryFileStore) ReadFile(path api.FSPathSpec) (api.FileReader, erro
 		}, nil
 	}
 
-	return nil, errors.New("Not found")
+	return nil, os.ErrNotExist
 }
 
 func (self *MemoryFileStore) WriteFile(path api.FSPathSpec) (api.FileWriter, error) {
+	return self.WriteFileWithCompletion(path, nil)
+}
+
+func (self *MemoryFileStore) WriteFileWithCompletion(
+	path api.FSPathSpec, completion func()) (api.FileWriter, error) {
+
+	defer api.InstrumentWithDelay("write_open", "MemoryFileStore", nil)()
+
 	self.mu.Lock()
 	defer self.mu.Unlock()
 
@@ -208,10 +234,13 @@ func (self *MemoryFileStore) WriteFile(path api.FSPathSpec) (api.FileWriter, err
 		buf:               buf.([]byte),
 		memory_file_store: self,
 		filename:          filename,
+		completion:        completion,
 	}, nil
 }
 
 func (self *MemoryFileStore) StatFile(path api.FSPathSpec) (api.FileInfo, error) {
+	defer api.InstrumentWithDelay("stat", "MemoryFileStore", nil)()
+
 	self.mu.Lock()
 	defer self.mu.Unlock()
 
@@ -230,6 +259,8 @@ func (self *MemoryFileStore) StatFile(path api.FSPathSpec) (api.FileInfo, error)
 }
 
 func (self *MemoryFileStore) Move(src, dest api.FSPathSpec) error {
+	defer api.InstrumentWithDelay("move", "MemoryFileStore", nil)()
+
 	self.mu.Lock()
 	defer self.mu.Unlock()
 
@@ -247,6 +278,7 @@ func (self *MemoryFileStore) Move(src, dest api.FSPathSpec) error {
 }
 
 func (self *MemoryFileStore) ListDirectory(root_path api.FSPathSpec) ([]api.FileInfo, error) {
+	defer api.InstrumentWithDelay("list", "MemoryFileStore", nil)()
 	self.mu.Lock()
 	defer self.mu.Unlock()
 
@@ -326,32 +358,9 @@ func (self *MemoryFileStore) ListDirectory(root_path api.FSPathSpec) ([]api.File
 	return result, nil
 }
 
-func (self *MemoryFileStore) Walk(
-	root api.FSPathSpec, walkFn api.WalkFunc) error {
-	children, err := self.ListDirectory(root)
-	if err != nil {
-		return err
-	}
-
-	for _, child_info := range children {
-		full_path := child_info.PathSpec()
-		if !child_info.IsDir() {
-			err := walkFn(full_path, child_info)
-			if err == filepath.SkipDir {
-				continue
-			}
-		}
-
-		err := self.Walk(full_path, walkFn)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 func (self *MemoryFileStore) Delete(path api.FSPathSpec) error {
+	defer api.InstrumentWithDelay("delete", "MemoryFileStore", nil)()
+
 	self.mu.Lock()
 	defer self.mu.Unlock()
 
@@ -384,6 +393,11 @@ func (self *MemoryFileStore) Clear() {
 
 	self.Data = ordereddict.NewDict()
 	self.Paths = ordereddict.NewDict()
+}
+
+func (self *MemoryFileStore) Close() error {
+	self.Clear()
+	return nil
 }
 
 func pathSpecToPath(

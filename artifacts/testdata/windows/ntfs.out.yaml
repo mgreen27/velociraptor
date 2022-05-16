@@ -6,6 +6,9 @@ SELECT FullPath FROM glob(globs="/*", accessor="ntfs")[
   "FullPath": "\\\\.\\D:"
  },
  {
+  "FullPath": "\\\\.\\X:"
+ },
+ {
   "FullPath": "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1"
  },
  {
@@ -19,6 +22,9 @@ SELECT FullPath FROM glob(globs="/*", accessor="ntfs")[
   "FullPath": "\\\\.\\D:"
  },
  {
+  "FullPath": "\\\\.\\X:"
+ },
+ {
   "FullPath": "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1"
  },
  {
@@ -26,28 +32,28 @@ SELECT FullPath FROM glob(globs="/*", accessor="ntfs")[
  }
 ]SELECT FullPath FROM glob(globs="\\\\.\\c:\\*", accessor="ntfs") WHERE Name = "Windows"[
  {
-  "FullPath": "\\\\.\\c:\\Windows"
+  "FullPath": "\\\\.\\C:\\Windows"
  }
 ]SELECT FullPath FROM glob(globs="\\\\.\\c:\\Windows\\*", accessor="ntfs") WHERE Name = "notepad.exe"[
  {
-  "FullPath": "\\\\.\\c:\\Windows\\notepad.exe"
+  "FullPath": "\\\\.\\C:\\Windows\\notepad.exe"
  }
 ]SELECT FullPath FROM glob(globs="c:/Windows/*", accessor="ntfs") WHERE Name = "notepad.exe"[
  {
-  "FullPath": "\\\\.\\c:\\Windows\\notepad.exe"
+  "FullPath": "\\\\.\\C:\\Windows\\notepad.exe"
  }
-]SELECT FullPath FROM glob(globs="c:\\*", accessor="ntfs") WHERE Name =~ "txt"[
+]SELECT FullPath FROM glob(globs="c:\\*", accessor="ntfs") WHERE Name =~ "h.+txt"[
  {
-  "FullPath": "\\\\.\\c:\\HI.TXT"
+  "FullPath": "\\\\.\\C:\\HI.TXT"
  },
  {
-  "FullPath": "\\\\.\\c:\\HI.TXT:myads"
+  "FullPath": "\\\\.\\C:\\HI.TXT:myads"
  },
  {
-  "FullPath": "\\\\.\\c:\\hello.txt"
+  "FullPath": "\\\\.\\C:\\hello.txt"
  },
  {
-  "FullPath": "\\\\.\\c:\\hello.txt:myads"
+  "FullPath": "\\\\.\\C:\\hello.txt:myads"
  }
 ]SELECT FullPath FROM glob(globs="C:/$LogFile", accessor="lazy_ntfs")[
  {
@@ -65,6 +71,9 @@ SELECT FullPath FROM glob(globs="/*", accessor="ntfs")[
   "FullPath": "\\\\.\\D:"
  },
  {
+  "FullPath": "\\\\.\\X:"
+ },
+ {
   "FullPath": "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1"
  },
  {
@@ -78,6 +87,9 @@ SELECT FullPath FROM glob(globs="/*", accessor="ntfs")[
   "FullPath": "\\\\.\\D:"
  },
  {
+  "FullPath": "\\\\.\\X:"
+ },
+ {
   "FullPath": "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1"
  },
  {
@@ -85,18 +97,35 @@ SELECT FullPath FROM glob(globs="/*", accessor="ntfs")[
  }
 ]SELECT FullPath FROM glob(globs="\\\\.\\c:\\*", accessor="lazy_ntfs") WHERE Name = "Windows"[
  {
-  "FullPath": "\\\\.\\c:\\Windows"
+  "FullPath": "\\\\.\\C:\\Windows"
  }
 ]SELECT FullPath FROM glob(globs="\\\\.\\c:\\Windows\\*", accessor="lazy_ntfs") WHERE Name = "notepad.exe"[
  {
-  "FullPath": "\\\\.\\c:\\Windows\\notepad.exe"
+  "FullPath": "\\\\.\\C:\\Windows\\notepad.exe"
  }
 ]SELECT FullPath FROM glob(globs="c:/Windows/*", accessor="lazy_ntfs") WHERE Name = "notepad.exe"[
  {
-  "FullPath": "\\\\.\\c:\\Windows\\notepad.exe"
+  "FullPath": "\\\\.\\C:\\Windows\\notepad.exe"
  }
 ]SELECT FullPath FROM glob(globs="c:\\*", accessor="lazy_ntfs") WHERE Name =~ "txt"[
  {
-  "FullPath": "\\\\.\\c:\\hello.txt"
+  "FullPath": "\\\\.\\C:\\HI.TXT"
+ },
+ {
+  "FullPath": "\\\\.\\C:\\HI.TXT:myads"
+ },
+ {
+  "FullPath": "\\\\.\\C:\\hello.txt"
+ },
+ {
+  "FullPath": "\\\\.\\C:\\hello.txt:myads"
+ }
+]SELECT AdsName,Size,HostObject,AdsContent,OSPath FROM Artifact.Windows.NTFS.ADSHunter(TargetFolder='C:\\adstest')[
+ {
+  "AdsName": "test.txt",
+  "Size": 54,
+  "HostObject": "\\\\.\\C:\\adstest\\test",
+  "AdsContent": "\"This is a test of a folder ADS! Its resident too!\" \r\n",
+  "OSPath": "\\\\.\\C:\\adstest\\test:test.txt"
  }
 ]

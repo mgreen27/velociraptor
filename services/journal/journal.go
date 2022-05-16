@@ -18,11 +18,16 @@ import (
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/file_store"
 	"www.velocidex.com/golang/velociraptor/file_store/api"
+	"www.velocidex.com/golang/velociraptor/json"
 	"www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/paths/artifacts"
 	"www.velocidex.com/golang/velociraptor/result_sets"
 	"www.velocidex.com/golang/velociraptor/services"
 	"www.velocidex.com/golang/velociraptor/utils"
+)
+
+var (
+	notInitializedError = errors.New("Not initialized")
 )
 
 type JournalService struct {
@@ -37,9 +42,20 @@ type JournalService struct {
 	Clock utils.Clock
 }
 
+func (self *JournalService) GetWatchers() []string {
+	return self.qm.GetWatchers()
+}
+
+func (self *JournalService) publishWatchers() {
+	self.PushRowsToArtifact(self.config_obj,
+		[]*ordereddict.Dict{ordereddict.NewDict().
+			Set("Events", self.GetWatchers())},
+		"Server.Internal.MasterRegistrations", "server", "")
+}
+
 func (self *JournalService) Watch(
-	ctx context.Context, queue_name string) (
-	output <-chan *ordereddict.Dict, cancel func()) {
+	ctx context.Context, queue_name string,
+	watcher_name string) (<-chan *ordereddict.Dict, func()) {
 
 	if self == nil || self.qm == nil {
 		// Readers block on nil channel.
@@ -47,8 +63,20 @@ func (self *JournalService) Watch(
 	}
 
 	logger := logging.GetLogger(self.config_obj, &logging.FrontendComponent)
-	logger.Info("Watching for events from %v", queue_name)
-	return self.qm.Watch(ctx, queue_name)
+	logger.Info("%s: Watching for events from %v", watcher_name, queue_name)
+	res, cancel := self.qm.Watch(ctx, queue_name, &api.QueueOptions{
+		OwnerName: watcher_name,
+	})
+
+	// Advertise new watchers
+	self.publishWatchers()
+
+	return res, func() {
+		cancel()
+
+		// Advertise that a watcher was removed.
+		self.publishWatchers()
+	}
 }
 
 // Write rows to a simple result set. This function manages concurrent
@@ -78,7 +106,7 @@ func (self *JournalService) AppendToResultSet(
 
 	// Append the data to the end of the file.
 	rs_writer, err := result_sets.NewResultSetWriter(file_store_factory,
-		path, nil, false /* truncate */)
+		path, json.NoEncOpts, utils.BackgroundWriter, result_sets.AppendMode)
 	if err != nil {
 		return err
 	}
@@ -90,6 +118,92 @@ func (self *JournalService) AppendToResultSet(
 	rs_writer.Close()
 
 	return nil
+}
+
+func (self *JournalService) AppendJsonlToResultSet(
+	config_obj *config_proto.Config,
+	path api.FSPathSpec,
+	jsonl []byte) error {
+
+	// Key a lock to manage access to this file.
+	self.mu.Lock()
+	key := path.AsClientPath()
+	per_file_mu, pres := self.locks[key]
+	if !pres {
+		per_file_mu = &sync.Mutex{}
+		self.locks[key] = per_file_mu
+	}
+	self.mu.Unlock()
+
+	// Lock the file.
+	per_file_mu.Lock()
+	defer per_file_mu.Unlock()
+
+	file_store_factory := file_store.GetFileStore(config_obj)
+
+	// Append the data to the end of the file.
+	rs_writer, err := result_sets.NewResultSetWriter(file_store_factory,
+		path, json.NoEncOpts, utils.BackgroundWriter, result_sets.AppendMode)
+	if err != nil {
+		return err
+	}
+	rs_writer.WriteJSONL(jsonl, 0)
+	rs_writer.Close()
+
+	return nil
+}
+
+func (self *JournalService) PushRowsToArtifactAsync(
+	config_obj *config_proto.Config, row *ordereddict.Dict,
+	artifact string) {
+
+	go self.PushRowsToArtifact(config_obj, []*ordereddict.Dict{row},
+		artifact, "server", "")
+}
+
+func (self *JournalService) Broadcast(
+	config_obj *config_proto.Config, rows []*ordereddict.Dict,
+	artifact, client_id, flows_id string) error {
+	if self == nil || self.qm == nil {
+		return notInitializedError
+	}
+
+	path_manager, err := artifacts.NewArtifactPathManager(
+		config_obj, client_id, flows_id, artifact)
+	if err != nil {
+		return err
+	}
+
+	self.qm.Broadcast(path_manager, rows)
+	return nil
+}
+
+func (self *JournalService) PushJsonlToArtifact(
+	config_obj *config_proto.Config, jsonl []byte,
+	artifact, client_id, flows_id string) error {
+
+	path_manager, err := artifacts.NewArtifactPathManager(
+		config_obj, client_id, flows_id, artifact)
+	if err != nil {
+		return err
+	}
+	path_manager.Clock = self.Clock
+
+	// Just a regular artifact, append to the existing result set.
+	if !path_manager.IsEvent() {
+		path, err := path_manager.GetPathForWriting()
+		if err != nil {
+			return err
+		}
+		return self.AppendJsonlToResultSet(config_obj, path, jsonl)
+	}
+
+	// The Queue manager will manage writing event artifacts to a
+	// timed result set, including multi frontend synchronisation.
+	if self != nil && self.qm != nil {
+		return self.qm.PushEventJsonl(path_manager, jsonl)
+	}
+	return errors.New("Filestore not initialized")
 }
 
 func (self *JournalService) PushRowsToArtifact(
@@ -123,6 +237,7 @@ func (self *JournalService) PushRowsToArtifact(
 func (self *JournalService) Start(config_obj *config_proto.Config) error {
 	logger := logging.GetLogger(config_obj, &logging.FrontendComponent)
 	logger.Info("<green>Starting</> Journal service.")
+
 	return nil
 }
 
@@ -131,18 +246,9 @@ func StartJournalService(
 
 	// Are we running on a minion frontend? If so we try to start
 	// our replication service.
-	fe_manager := services.GetFrontendManager()
-	if fe_manager != nil && !fe_manager.IsMaster() {
-		service := &ReplicationService{
-			config_obj: config_obj,
-			locks:      make(map[string]*sync.Mutex),
-		}
-
-		err := service.Start(ctx, wg)
-		if err == nil {
-			services.RegisterJournal(service)
-			return nil
-		}
+	if !services.IsMaster(config_obj) {
+		_, err := NewReplicationService(ctx, wg, config_obj)
+		return err
 	}
 
 	// It is valid to have a journal service with no configured datastore:
@@ -153,11 +259,6 @@ func StartJournalService(
 		locks:      make(map[string]*sync.Mutex),
 		Clock:      utils.RealClock{},
 	}
-	old_service, err := services.GetJournal()
-	if err == nil {
-		service.qm = old_service.(*JournalService).qm
-	}
-
 	qm, err := file_store.GetQueueManager(config_obj)
 	if err != nil || qm != nil {
 		service.qm = qm

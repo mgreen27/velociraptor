@@ -16,20 +16,18 @@ import (
 	actions_proto "www.velocidex.com/golang/velociraptor/actions/proto"
 	"www.velocidex.com/golang/velociraptor/api"
 	api_proto "www.velocidex.com/golang/velociraptor/api/proto"
-	"www.velocidex.com/golang/velociraptor/clients"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/constants"
+	"www.velocidex.com/golang/velociraptor/crypto"
 	crypto_client "www.velocidex.com/golang/velociraptor/crypto/client"
 	crypto_proto "www.velocidex.com/golang/velociraptor/crypto/proto"
 	"www.velocidex.com/golang/velociraptor/datastore"
-	"www.velocidex.com/golang/velociraptor/file_store"
 	file_store_api "www.velocidex.com/golang/velociraptor/file_store/api"
 	"www.velocidex.com/golang/velociraptor/file_store/test_utils"
 	"www.velocidex.com/golang/velociraptor/flows"
 	flows_proto "www.velocidex.com/golang/velociraptor/flows/proto"
 	"www.velocidex.com/golang/velociraptor/paths"
 	"www.velocidex.com/golang/velociraptor/paths/artifacts"
-	"www.velocidex.com/golang/velociraptor/result_sets"
 	"www.velocidex.com/golang/velociraptor/server"
 	"www.velocidex.com/golang/velociraptor/services"
 	"www.velocidex.com/golang/velociraptor/services/client_monitoring"
@@ -106,6 +104,13 @@ func (self *ServerTestSuite) SetupTest() {
 	require.NoError(self.T(), err)
 
 	self.client_id = self.client_crypto.ClientId
+	db, err := datastore.GetDB(self.ConfigObj)
+	assert.NoError(self.T(), err)
+
+	client_path_manager := paths.NewClientPathManager(self.client_id)
+	err = db.SetSubject(self.ConfigObj, client_path_manager.Path(),
+		&actions_proto.ClientInfo{ClientId: self.client_id})
+	assert.NoError(self.T(), err)
 }
 
 func (self *ServerTestSuite) TestEnrollment() {
@@ -174,19 +179,15 @@ func (self *ServerTestSuite) TestClientEventTable() {
 	// Wait a bit.
 	time.Sleep(time.Second)
 
-	// Send a foreman checkin message from client with old event
-	// table version.
-	runner.ProcessSingleMessage(
-		context.Background(),
-		&crypto_proto.VeloMessage{
-			Source: self.client_id,
-			ForemanCheckin: &actions_proto.ForemanCheckin{
-				LastEventTableVersion: 0,
-			},
-		})
+	// Send a message from client to trigger check
+	runner.ProcessMessages(context.Background(), &crypto.MessageInfo{
+		Source: self.client_id,
+	})
 
-	tasks, err := clients.GetClientTasks(self.ConfigObj,
-		self.client_id, true /* do_not_lease */)
+	client_info_manager, err := services.GetClientInfoManager()
+	assert.NoError(self.T(), err)
+
+	tasks, err := client_info_manager.PeekClientTasks(self.client_id)
 	assert.NoError(t, err)
 	assert.Equal(t, len(tasks), 1)
 
@@ -235,49 +236,28 @@ func (self *ServerTestSuite) TestForeman() {
 
 	assert.Equal(t, hunt.StartRequest, expected)
 
-	// Send a foreman checkin message from client with old hunt
-	// timestamp.
-	runner.ProcessSingleMessage(
-		context.Background(),
-		&crypto_proto.VeloMessage{
-			Source: self.client_id,
-			ForemanCheckin: &actions_proto.ForemanCheckin{
-				LastHuntTimestamp: 0,
-
-				// We do not want to trigger an event
-				// table update in this test so we
-				// pretend our version is later than
-				// the automatics table that will be
-				// created.
-				LastEventTableVersion: 10000000000000000000,
-			},
-		})
+	// Send a message from client to trigger check
+	runner.ProcessMessages(context.Background(), &crypto.MessageInfo{
+		Source: self.client_id,
+	})
 
 	// Server should schedule the new hunt on the client.
-	tasks, err := clients.GetClientTasks(self.ConfigObj,
-		self.client_id, true /* do_not_lease */)
+	client_info_manager, err := services.GetClientInfoManager()
+	assert.NoError(t, err)
+
+	tasks, err := client_info_manager.PeekClientTasks(self.client_id)
 	assert.NoError(t, err)
 	assert.Equal(t, len(tasks), 1)
 
-	// Task should be UpdateForeman message.
+	// Task should be UpdateEventTable message.
 	assert.Equal(t, tasks[0].SessionId, "F.Monitoring")
-	require.NotNil(t, tasks[0].UpdateForeman)
-	assert.Equal(t, tasks[0].UpdateForeman.LastHuntTimestamp, services.GetHuntDispatcher().
-		GetLastTimestamp())
+	require.NotNil(t, tasks[0].UpdateEventTable)
 
-	path_manager, err := artifacts.NewArtifactPathManager(self.ConfigObj,
-		self.client_id, "", "System.Hunt.Participation")
+	// The client_info_manager will remember the last hunt timestamp
+	stats, err := client_info_manager.GetStats(self.client_id)
 	assert.NoError(t, err)
 
-	rows := []*ordereddict.Dict{}
-	file_store_factory := file_store.GetFileStore(self.ConfigObj)
-	rs_reader, err := result_sets.NewResultSetReader(
-		file_store_factory, path_manager.Path())
-	assert.NoError(t, err)
-	for row := range rs_reader.Rows(self.Sm.Ctx) {
-		rows = append(rows, row)
-	}
-	assert.Equal(t, len(rows), 1)
+	assert.Equal(t, stats.LastHuntTimestamp, hunt.StartTime)
 }
 
 func (self *ServerTestSuite) RequiredFilestoreContains(
@@ -310,7 +290,7 @@ func (self *ServerTestSuite) TestMonitoring() {
 					`[{"ClientId": "%s", "HuntId": "H.123"}]`,
 					self.client_id),
 				Query: &actions_proto.VQLRequest{
-					Name: "System.Hunt.Participation",
+					Name: "Generic.Client.Stats",
 				},
 			},
 		})
@@ -318,11 +298,10 @@ func (self *ServerTestSuite) TestMonitoring() {
 
 	path_manager, err := artifacts.NewArtifactPathManager(self.ConfigObj,
 		self.client_id, constants.MONITORING_WELL_KNOWN_FLOW,
-		"System.Hunt.Participation")
+		"Generic.Client.Stats")
 	assert.NoError(self.T(), err)
 
 	self.RequiredFilestoreContains(path_manager.Path(), self.client_id)
-	test_utils.GetMemoryFileStore(self.T(), self.ConfigObj).Debug()
 }
 
 // Monitoring queries which upload data.
@@ -406,8 +385,10 @@ func (self *ServerTestSuite) TestLogToUnknownFlow() {
 	t := self.T()
 
 	// Cancellation message should never be sent due to log.
-	tasks, err := clients.GetClientTasks(self.ConfigObj,
-		self.client_id, true /* do_not_lease */)
+	client_info_manager, err := services.GetClientInfoManager()
+	assert.NoError(self.T(), err)
+
+	tasks, err := client_info_manager.PeekClientTasks(self.client_id)
 	assert.NoError(t, err)
 	assert.Equal(t, len(tasks), 0)
 
@@ -422,8 +403,7 @@ func (self *ServerTestSuite) TestLogToUnknownFlow() {
 	runner.Close()
 
 	// Cancellation message should never be sent due to status.
-	tasks, err = clients.GetClientTasks(self.ConfigObj,
-		self.client_id, true /* do_not_lease */)
+	tasks, err = client_info_manager.PeekClientTasks(self.client_id)
 	assert.NoError(t, err)
 	assert.Equal(t, len(tasks), 0)
 
@@ -439,8 +419,7 @@ func (self *ServerTestSuite) TestLogToUnknownFlow() {
 
 	// Cancellation message should be sent due to response
 	// messages.
-	tasks, err = clients.GetClientTasks(self.ConfigObj,
-		self.client_id, true /* do_not_lease */)
+	tasks, err = client_info_manager.PeekClientTasks(self.client_id)
 	assert.NoError(t, err)
 	assert.Equal(t, len(tasks), 1)
 }
@@ -466,15 +445,16 @@ func (self *ServerTestSuite) TestScheduleCollection() {
 		self.ConfigObj,
 		vql_subsystem.NullACLManager{},
 		repository,
-		request)
+		request, nil)
 
 	db, err := datastore.GetDB(self.ConfigObj)
 	require.NoError(t, err)
 
 	// Launching the artifact will schedule one query on the client.
-	tasks, err := clients.GetClientTasks(
-		self.ConfigObj, self.client_id,
-		true /* do_not_lease */)
+	client_info_manager, err := services.GetClientInfoManager()
+	assert.NoError(self.T(), err)
+
+	tasks, err := client_info_manager.PeekClientTasks(self.client_id)
 	assert.NoError(t, err)
 	assert.Equal(t, len(tasks), 2)
 
@@ -506,7 +486,7 @@ func (self *ServerTestSuite) createArtifactCollection() (string, error) {
 		&flows_proto.ArtifactCollectorArgs{
 			ClientId:  self.client_id,
 			Artifacts: []string{"Generic.Client.Info"},
-		})
+		}, nil)
 
 	return flow_id, err
 }
@@ -698,8 +678,10 @@ func (self *ServerTestSuite) TestCancellation() {
 	require.NoError(t, err)
 
 	// One task is scheduled for the client.
-	tasks, err := clients.GetClientTasks(self.ConfigObj,
-		self.client_id, true /* do_not_lease */)
+	client_info_manager, err := services.GetClientInfoManager()
+	assert.NoError(self.T(), err)
+
+	tasks, err := client_info_manager.PeekClientTasks(self.client_id)
 	assert.NoError(t, err)
 
 	// Generic.Client.Info has two source preconditions in parallel
@@ -714,8 +696,7 @@ func (self *ServerTestSuite) TestCancellation() {
 
 	// Cancelling a flow simply schedules a cancel message for the
 	// client and removes all pending tasks.
-	tasks, err = clients.GetClientTasks(self.ConfigObj,
-		self.client_id, true /* do_not_lease */)
+	tasks, err = client_info_manager.PeekClientTasks(self.client_id)
 	assert.NoError(t, err)
 	assert.Equal(t, len(tasks), 1)
 
@@ -759,8 +740,10 @@ func (self *ServerTestSuite) TestUnknownFlow() {
 		})
 
 	// This should send a cancellation message to the client.
-	tasks, err := clients.GetClientTasks(self.ConfigObj,
-		self.client_id, true /* do_not_lease */)
+	client_info_manager, err := services.GetClientInfoManager()
+	assert.NoError(t, err)
+
+	tasks, err := client_info_manager.PeekClientTasks(self.client_id)
 	assert.NoError(t, err)
 	assert.Equal(t, len(tasks), 1)
 

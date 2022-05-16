@@ -2,6 +2,7 @@ package journal_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,8 @@ import (
 	api_proto "www.velocidex.com/golang/velociraptor/api/proto"
 	"www.velocidex.com/golang/velociraptor/config"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
+	"www.velocidex.com/golang/velociraptor/datastore"
+	"www.velocidex.com/golang/velociraptor/file_store"
 	"www.velocidex.com/golang/velociraptor/file_store/test_utils"
 	"www.velocidex.com/golang/velociraptor/services"
 	"www.velocidex.com/golang/velociraptor/services/inventory"
@@ -27,14 +30,16 @@ import (
 	"www.velocidex.com/golang/velociraptor/services/repository"
 	"www.velocidex.com/golang/velociraptor/utils"
 	"www.velocidex.com/golang/velociraptor/vtesting"
+
+	_ "www.velocidex.com/golang/velociraptor/result_sets/timed"
 )
 
 type MockFrontendService struct {
 	mock *mock_proto.MockAPIClient
 }
 
-func (self MockFrontendService) IsMaster() bool {
-	return false
+func (self MockFrontendService) GetMinionCount() int {
+	return 1
 }
 
 // The minion replicates to the master node.
@@ -52,31 +57,46 @@ type ReplicationTestSuite struct {
 }
 
 func (self *ReplicationTestSuite) startServices() {
+	t := self.T()
+
 	ctx, _ := context.WithTimeout(context.Background(), time.Second*60)
 	self.sm = services.NewServiceManager(ctx, self.config_obj)
 
-	t := self.T()
-	assert.NoError(t, self.sm.Start(journal.StartJournalService))
+	replicator, err := journal.NewReplicationService(
+		self.sm.Ctx, self.sm.Wg, self.config_obj)
+	assert.NoError(t, err)
+
+	replicator.SetRetryDuration(100 * time.Millisecond)
+
 	assert.NoError(t, self.sm.Start(notifications.StartNotificationService))
 	assert.NoError(t, self.sm.Start(inventory.StartInventoryService))
 	assert.NoError(t, self.sm.Start(launcher.StartLauncherService))
 	assert.NoError(t, self.sm.Start(repository.StartRepositoryManagerForTest))
+}
 
-	// Set retry to be faster.
-	journal_service, err := services.GetJournal()
+func (self *ReplicationTestSuite) LoadArtifacts(definitions []string) {
+	manager, _ := services.GetRepositoryManager()
+	global_repo, err := manager.GetGlobalRepository(self.config_obj)
 	assert.NoError(self.T(), err)
 
-	replicator := journal_service.(*journal.ReplicationService)
-	replicator.SetRetryDuration(100 * time.Millisecond)
+	for _, def := range definitions {
+		_, err := global_repo.LoadYaml(def, true, true)
+		assert.NoError(self.T(), err)
+	}
 }
 
 func (self *ReplicationTestSuite) SetupTest() {
 	var err error
+	file_store.Reset()
+	datastore.Reset()
+
 	self.config_obj, err = new(config.Loader).WithFileLoader(
 		"../../http_comms/test_data/server.config.yaml").
 		WithRequiredFrontend().WithWriteback().
 		LoadAndValidate()
 	require.NoError(self.T(), err)
+
+	self.config_obj.Frontend.IsMinion = true
 
 	self.ctrl = gomock.NewController(self.T())
 	self.mock = mock_proto.NewMockAPIClient(self.ctrl)
@@ -127,7 +147,20 @@ func (self *ReplicationTestSuite) TestReplicationServiceStandardWatchers() {
 		//gomock.AssignableToTypeOf(&api_proto.EventRequest{})).
 		DoAndReturn(mock_watch_event_recorder).AnyTimes()
 
+	// Replication service only runs on the minion node. We mock
+	// the minion frontend manager so we can inject the RPC mock.
+	services.RegisterFrontendManager(&MockFrontendService{self.mock})
+
 	self.startServices()
+
+	// Replication service only runs on the minion node. We mock
+	// the minion frontend manager so we can inject the RPC mock.
+	services.RegisterFrontendManager(&MockFrontendService{self.mock})
+
+	self.LoadArtifacts([]string{`
+name: Test.Artifact
+type: CLIENT_EVENT
+`})
 
 	// Wait here until we call all the watchers.
 	vtesting.WaitUntil(5*time.Second, self.T(), func() bool {
@@ -135,14 +168,18 @@ func (self *ReplicationTestSuite) TestReplicationServiceStandardWatchers() {
 		defer mu.Unlock()
 
 		return vtesting.CompareStrings(watched, []string{
-			// Watch for ping requests from the
-			// master. This is used to let the master know
-			// if a client is connected to us.
-			"Server.Internal.Ping",
+			"Server.Internal.ArtifactModification",
+			"Server.Internal.MasterRegistrations",
 
 			// The notifications service will watch for
 			// notifications through us.
 			"Server.Internal.Notifications",
+
+			// Watch for ping requests from the
+			// master. This is used to let the master know
+			// if a client is connected to us.
+			"Server.Internal.Ping",
+			"Server.Internal.Pong",
 		})
 	})
 }
@@ -183,6 +220,8 @@ func (self *ReplicationTestSuite) TestSendingEvents() {
 
 	replicator := journal_service.(*journal.ReplicationService)
 	replicator.SetRetryDuration(100 * time.Millisecond)
+	replicator.ProcessMasterRegistrations(ordereddict.NewDict().
+		Set("Events", []interface{}{"Test.Artifact"}))
 
 	events = nil
 	err = journal_service.PushRowsToArtifact(self.config_obj,
@@ -216,8 +255,14 @@ func (self *ReplicationTestSuite) TestSendingEvents() {
 		assert.NoError(self.T(), err)
 	}
 
+	// Wait for events to move from the channel buffer in memory to
+	// the disk buffer.
+	time.Sleep(time.Second)
+
 	// Make sure we wrote something to the buffer file.
-	assert.True(self.T(), replicator.Buffer.GetHeader().WritePointer > 2000)
+	ptr := replicator.Buffer.GetHeader().WritePointer
+	assert.True(self.T(),
+		ptr > 2000, fmt.Sprintf("WritePointer %v", ptr))
 
 	// Wait a while to allow events to be delivered.
 	time.Sleep(time.Second)
@@ -232,7 +277,7 @@ func (self *ReplicationTestSuite) TestSendingEvents() {
 	last_error = nil
 	mu.Unlock()
 
-	vtesting.WaitUntil(time.Second, self.T(), func() bool {
+	vtesting.WaitUntil(5*time.Second, self.T(), func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 

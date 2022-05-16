@@ -36,6 +36,7 @@ import (
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
+	"www.velocidex.com/golang/velociraptor/config"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	crypto_client "www.velocidex.com/golang/velociraptor/crypto/client"
 	crypto_utils "www.velocidex.com/golang/velociraptor/crypto/utils"
@@ -44,6 +45,7 @@ import (
 	logging "www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/services"
 	"www.velocidex.com/golang/velociraptor/utils"
+	"www.velocidex.com/golang/velociraptor/vql/tools"
 )
 
 var (
@@ -85,7 +87,9 @@ func doInstall(config_obj *config_proto.Config) (err error) {
 	target_path := os.ExpandEnv(config_obj.Client.WindowsInstaller.InstallPath)
 
 	executable, err := os.Executable()
-	kingpin.FatalIfError(err, "unable to determine executable path")
+	if err != nil {
+		return fmt.Errorf("unable to determine executable path: %w", err)
+	}
 	pres, err := checkServiceExists(service_name)
 	if err != nil {
 		logger.Info("checkServiceExists: %v", err)
@@ -293,9 +297,11 @@ func removeService(name string) error {
 	return nil
 }
 
-func doRemove() {
+func doRemove() error {
 	config_obj, err := makeDefaultConfigLoader().LoadAndValidate()
-	kingpin.FatalIfError(err, "Unable to load config file")
+	if err != nil {
+		return fmt.Errorf("Unable to load config file: %w", err)
+	}
 
 	logger := logging.GetLogger(config_obj, &logging.ClientComponent)
 	service_name := config_obj.Client.WindowsInstaller.ServiceName
@@ -309,8 +315,11 @@ func doRemove() {
 	}
 
 	err = removeService(service_name)
-	kingpin.FatalIfError(err, "Unable to remove service")
+	if err != nil {
+		return fmt.Errorf("Unable to remove service: %w", err)
+	}
 	logger.Info("Removed service %s", service_name)
+	return nil
 }
 
 func getLogger(name string) (debug.Log, error) {
@@ -350,7 +359,6 @@ func loadClientConfig() (*config_proto.Config, error) {
 		// log anything since we dont know where to send it so
 		// prelog instead.
 		logging.Prelog("Failed to load %v will try again soon.\n", *config_path)
-
 		return nil, err
 	}
 
@@ -371,7 +379,9 @@ func doRun() error {
 	if err == nil {
 		name = config_obj.Client.WindowsInstaller.ServiceName
 	}
-	service, err := NewVelociraptorService(name)
+
+	ctx := context.Background()
+	service, err := NewVelociraptorService(ctx, name)
 	if err != nil {
 		return err
 	}
@@ -469,20 +479,28 @@ func (self *VelociraptorService) Close() {
 	}
 }
 
-func runOnce(result *VelociraptorService, elog debug.Log) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func runOnce(ctx context.Context,
+	wg *sync.WaitGroup, result *VelociraptorService, elog debug.Log) {
+	defer wg.Done()
 
 	// Spin forever waiting for a config file to be
 	// dropped into place.
 	config_obj, err := loadClientConfig()
 	if err != nil {
-		time.Sleep(10 * time.Second)
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
+		}
+		return
+	}
+
+	writeback, err := config.GetWriteback(config_obj.Client)
+	if err != nil {
 		return
 	}
 
 	manager, err := crypto_client.NewClientCryptoManager(
-		config_obj, []byte(config_obj.Writeback.PrivateKey))
+		config_obj, []byte(writeback.PrivateKey))
 	if err != nil {
 		elog.Error(1, fmt.Sprintf(
 			"Can not create crypto: %v", err))
@@ -499,11 +517,12 @@ func runOnce(result *VelociraptorService, elog debug.Log) {
 	}
 
 	comm, err := http_comms.NewHTTPCommunicator(
+		ctx,
 		config_obj,
 		manager,
 		exe,
 		config_obj.Client.ServerUrls,
-		func() { on_error(config_obj) },
+		func() { on_error(ctx, config_obj) },
 		utils.RealClock{},
 	)
 	if err != nil {
@@ -521,14 +540,22 @@ func runOnce(result *VelociraptorService, elog debug.Log) {
 	// before we begin the comms.
 	sm := services.NewServiceManager(ctx, config_obj)
 	defer sm.Close()
+
+	// Start the nanny first so we are covered from here on.
+	err = sm.Start(executor.StartNannyService)
+	if err != nil {
+		return
+	}
+
 	err = executor.StartServices(sm, manager.ClientId, exe)
 	if err != nil {
 		return
 	}
-	comm.Run(ctx)
+	comm.Run(ctx, wg)
 }
 
-func NewVelociraptorService(name string) (*VelociraptorService, error) {
+func NewVelociraptorService(
+	ctx context.Context, name string) (*VelociraptorService, error) {
 	elog, err := getLogger(name)
 	if err != nil {
 		return nil, err
@@ -538,8 +565,22 @@ func NewVelociraptorService(name string) (*VelociraptorService, error) {
 
 	go func() {
 		for {
-			runOnce(result, elog)
-			time.Sleep(10 * time.Second)
+			subctx, cancel := context.WithCancel(ctx)
+			lwg := &sync.WaitGroup{}
+			lwg.Add(1)
+			go runOnce(subctx, lwg, result, elog)
+
+			select {
+			case <-ctx.Done():
+				// Wait for the client to shutdown.
+				cancel()
+				lwg.Wait()
+				return
+
+			case <-tools.ClientRestart:
+				cancel()
+				lwg.Wait()
+			}
 		}
 	}()
 
@@ -566,7 +607,7 @@ func init() {
 			}
 
 		case remove_command.FullCommand():
-			doRemove()
+			FatalIfError(remove_command, doRemove)
 
 		case run_command.FullCommand():
 			name := "velociraptor"

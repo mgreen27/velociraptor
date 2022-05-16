@@ -495,11 +495,18 @@ func (self *GuiTemplateEngine) Query(queries ...string) interface{} {
 
 			rs_writer, err := result_sets.NewResultSetWriter(
 				file_store_factory, path.Path(),
-				opts, true /* truncate */)
+				opts, utils.BackgroundWriter,
+				result_sets.TruncateMode)
 			if err != nil {
 				self.Error("Error: %v\n", err)
 				return nil
 			}
+
+			// We must ensure results are visible immediately because
+			// the GUI will need to refresh the cell content as soon
+			// as we complete.
+			rs_writer.SetSync()
+
 			defer rs_writer.Close()
 
 			rs_writer.Flush()
@@ -626,8 +633,13 @@ func NewGuiTemplateEngine(
 	artifact_name string) (
 	*GuiTemplateEngine, error) {
 
+	uploader := &NotebookUploader{
+		config_obj:  config_obj,
+		PathManager: notebook_cell_path_manager,
+	}
+
 	base_engine, err := newBaseTemplateEngine(
-		config_obj, scope, acl_manager, repository, artifact_name)
+		config_obj, scope, acl_manager, uploader, repository, artifact_name)
 	if err != nil {
 		return nil, err
 	}
@@ -673,6 +685,7 @@ func NewBlueMondayPolicy() *bluemonday.Policy {
 	p.AllowAttrs("value", "params").OnElements("scatter-chart")
 	p.AllowAttrs("value", "params").OnElements("time-chart")
 
+	//p.AllowNoAttrs().OnElements("accordion")
 	p.AllowAttrs("params").OnElements("notebook-bar-chart")
 	p.AllowAttrs("params").OnElements("notebook-line-chart")
 	p.AllowAttrs("params").OnElements("notebook-scatter-chart")

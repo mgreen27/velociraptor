@@ -3,7 +3,7 @@ on: [pull_request]
 jobs:
   build:
     name: Windows Test
-    runs-on: windows-latest
+    runs-on: windows-2019
     steps:
     - name: Set up Go 1.17
       uses: actions/setup-go@v2
@@ -36,12 +36,16 @@ jobs:
       run: |
         echo %PATH%
         echo %GOPATH%
+        subst X: %CD%
         mklink c:\Users\link c:\Windows
         mkdir "C:\Program Files\Velociraptor"
         mkdir c:\tmp
+        mkdir c:\adstest\test
+        echo "This is a test of a folder ADS! Its resident too!" > c:\adstest\test:test.txt
         echo Hello > C:\hello.txt
         echo HelloADS > C:\hello.txt:myads
         fsutil file setshortname C:\hello.txt hi.txt
+        wevtutil.exe cl System
         sc.exe create TestingDetection1 binPath="%COMSPEC% /Q /c echo 'COMSPEC testing 1"
         echo "VSStest" > c:\Users\test.txt
         echo "VSStest2" > c:\Users\test2.txt
@@ -83,7 +87,7 @@ jobs:
         CGO_ENABLED: "0"
 
       run: |
-        go test -v ./... --tags server_vql
+        go test -v ./... --tags server_vql -p 2
 
     - name: Test Golden Generic
       shell: cmd
@@ -99,14 +103,14 @@ jobs:
         vssadmin create shadow /for=c:
 
         echo Running OS generic tests.
-        output\velociraptor.exe -v golden D:\a\velociraptor\velociraptor\artifacts\testdata\server\testcases\ --env srcDir=d:\a\velociraptor\velociraptor\ --config D:\a\velociraptor\velociraptor\artifacts\testdata\windows\github_actions.config.yaml
+        output\velociraptor.exe -v golden X:\artifacts\testdata\server\testcases\ --env srcDir=X:\ --config X:\artifacts\testdata\windows\github_actions.config.yaml
 
     - name: Test Golden Windows
       shell: cmd
       if: always()
       run: |
         echo Running windows specific tests.
-        output\velociraptor.exe -v golden D:\a\velociraptor\velociraptor\artifacts\testdata\windows\ --env srcDir=d:\a\velociraptor\velociraptor\ --config D:\a\velociraptor\velociraptor\artifacts\testdata\windows\github_actions.config.yaml
+        output\velociraptor.exe -v golden X:\artifacts\testdata\windows\ --env srcDir=X:\ --config X:\artifacts\testdata\windows\github_actions.config.yaml
 
     - name: Upload Build Artifacts
       if: always()

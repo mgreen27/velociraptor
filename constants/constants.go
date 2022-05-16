@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	VERSION                    = "0.6.3-dev"
+	VERSION                    = "0.6.5-dev"
 	ENROLLMENT_WELL_KNOWN_FLOW = "E:Enrol"
 	MONITORING_WELL_KNOWN_FLOW = FLOW_PREFIX + "Monitoring"
 
@@ -47,14 +47,15 @@ const (
 	USER_AGENT = "Velociraptor - Dig Deeper!"
 
 	// Globals set in VQL scopes.
-	SCOPE_CONFIG        = "config"
-	SCOPE_SERVER_CONFIG = "server_config"
-	SCOPE_THROTTLE      = "$throttle"
-	SCOPE_UPLOADER      = "$uploader"
-	SCOPE_RESPONDER     = "$responder"
-	SCOPE_MOCK          = "$mock"
-	SCOPE_ROOT          = "$root"
-	SCOPE_STACK         = "$stack"
+	SCOPE_CONFIG         = "config"
+	SCOPE_SERVER_CONFIG  = "server_config"
+	SCOPE_THROTTLE       = "$throttle"
+	SCOPE_UPLOADER       = "$uploader"
+	SCOPE_RESPONDER      = "$responder"
+	SCOPE_MOCK           = "$mock"
+	SCOPE_ROOT           = "$root"
+	SCOPE_STACK          = "$stack"
+	SCOPE_DEVICE_MANAGER = "$device_manager"
 
 	// Artifact names from packs should start with this
 	ARTIFACT_PACK_NAME_PREFIX   = "Packs."
@@ -72,10 +73,11 @@ const (
 	// Number of clusters to cache in memory (default 100).
 	NTFS_CACHE_SIZE = "NTFS_CACHE_SIZE"
 
-	RAW_REG_CACHE_SIZE = "RAW_REG_CACHE_SIZE"
-	BINARY_CACHE_SIZE  = "BINARY_CACHE_SIZE"
-	EVTX_FREQUENCY     = "EVTX_FREQUENCY"
-	USN_FREQUENCY      = "USN_FREQUENCY"
+	RAW_REG_CACHE_SIZE  = "RAW_REG_CACHE_SIZE"
+	BINARY_CACHE_SIZE   = "BINARY_CACHE_SIZE"
+	EVTX_FREQUENCY      = "EVTX_FREQUENCY"
+	USN_FREQUENCY       = "USN_FREQUENCY"
+	ZIP_FILE_CACHE_SIZE = "ZIP_FILE_CACHE_SIZE"
 )
 
 type key int

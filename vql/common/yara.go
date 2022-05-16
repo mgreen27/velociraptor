@@ -34,12 +34,13 @@ import (
 
 	yara "github.com/Velocidex/go-yara"
 	"github.com/Velocidex/ordereddict"
-	"www.velocidex.com/golang/velociraptor/glob"
+	"www.velocidex.com/golang/velociraptor/accessors"
 	"www.velocidex.com/golang/velociraptor/uploads"
 	"www.velocidex.com/golang/velociraptor/utils"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
 	vfilter "www.velocidex.com/golang/vfilter"
 	"www.velocidex.com/golang/vfilter/arg_parser"
+	"www.velocidex.com/golang/vfilter/types"
 )
 
 type YaraHit struct {
@@ -54,20 +55,20 @@ type YaraResult struct {
 	Meta     map[string]interface{}
 	Tags     []string
 	String   *YaraHit
-	File     os.FileInfo
-	FileName string
+	File     accessors.FileInfo
+	FileName *accessors.OSPath
 }
 
 type YaraScanPluginArgs struct {
-	Rules        string   `vfilter:"required,field=rules,doc=Yara rules in the yara DSL."`
-	Files        []string `vfilter:"required,field=files,doc=The list of files to scan."`
-	Accessor     string   `vfilter:"optional,field=accessor,doc=Accessor (e.g. NTFS)"`
-	Context      int      `vfilter:"optional,field=context,doc=How many bytes to include around each hit"`
-	Start        uint64   `vfilter:"optional,field=start,doc=The start offset to scan"`
-	End          uint64   `vfilter:"optional,field=end,doc=End scanning at this offset (100mb)"`
-	NumberOfHits int64    `vfilter:"optional,field=number,doc=Stop after this many hits (1)."`
-	Blocksize    uint64   `vfilter:"optional,field=blocksize,doc=Blocksize for scanning (1mb)."`
-	Key          string   `vfilter:"optional,field=key,doc=If set use this key to cache the  yara rules."`
+	Rules        string      `vfilter:"required,field=rules,doc=Yara rules in the yara DSL."`
+	Files        []types.Any `vfilter:"required,field=files,doc=The list of files to scan."`
+	Accessor     string      `vfilter:"optional,field=accessor,doc=Accessor (e.g. ntfs,file)"`
+	Context      int         `vfilter:"optional,field=context,doc=How many bytes to include around each hit"`
+	Start        uint64      `vfilter:"optional,field=start,doc=The start offset to scan"`
+	End          uint64      `vfilter:"optional,field=end,doc=End scanning at this offset (100mb)"`
+	NumberOfHits int64       `vfilter:"optional,field=number,doc=Stop after this many hits (1)."`
+	Blocksize    uint64      `vfilter:"optional,field=blocksize,doc=Blocksize for scanning (1mb)."`
+	Key          string      `vfilter:"optional,field=key,doc=If set use this key to cache the  yara rules."`
 }
 
 type YaraScanPlugin struct{}
@@ -124,8 +125,19 @@ func (self YaraScanPlugin) Call(
 			yara_flag: yara_flag,
 		}
 
-		for _, filename := range arg.Files {
+		accessor, err := accessors.GetAccessor(arg.Accessor, scope)
+		if err != nil {
+			scope.Log("yara: %v", err)
+			return
+		}
 
+		for _, filename_any := range arg.Files {
+			filename, err := accessors.ParseOSPath(
+				ctx, scope, accessor, filename_any)
+			if err != nil {
+				scope.Log("yara: %v", err)
+				return
+			}
 			matcher.filename = filename
 
 			// If accessor is not specified we call yara's
@@ -138,7 +150,7 @@ func (self YaraScanPlugin) Call(
 					continue
 				} else {
 					scope.Log("Directly scanning file %v failed, will use accessor",
-						filename)
+						filename.String())
 				}
 			}
 
@@ -198,22 +210,23 @@ func (self *scanReporter) scanFileByAccessor(
 	start, end uint64,
 	output_chan chan vfilter.Row) {
 
-	accessor, err := glob.GetAccessor(accessor_name, self.scope)
+	accessor, err := accessors.GetAccessor(accessor_name, self.scope)
 	if err != nil {
 		self.scope.Log("yara: %v", err)
 		return
 	}
 
 	// Open the file with the accessor
-	f, err := accessor.Open(self.filename)
+	f, err := accessor.OpenWithOSPath(self.filename)
 	if err != nil {
-		self.scope.Log("Failed to open %v", self.filename)
+		self.scope.Log("yara: Failed to open %v with accessor %v: %v",
+			self.filename, accessor_name, err)
 		return
 	}
 	defer f.Close()
 
-	self.file_info, _ = f.Stat()
-	self.reader = utils.ReaderAtter{f}
+	self.file_info, _ = accessor.LstatWithOSPath(self.filename)
+	self.reader = utils.MakeReaderAtter(f)
 
 	// Support sparse file scanning
 	range_reader, ok := f.(uploads.RangeReader)
@@ -249,7 +262,7 @@ func (self *scanReporter) scanFileByAccessor(
 	}
 }
 
-func (self *scanReporter) scanRange(start, end uint64, f glob.ReadSeekCloser) {
+func (self *scanReporter) scanRange(start, end uint64, f accessors.ReadSeekCloser) {
 	buf := make([]byte, self.blocksize)
 
 	// self.scope.Log("Scanning %v from %#0x to %#0x", self.filename, start, end)
@@ -290,7 +303,7 @@ func (self *scanReporter) scanRange(start, end uint64, f glob.ReadSeekCloser) {
 		self.base_offset += uint64(n)
 
 		// We count an op as one MB scanned.
-		vfilter.ChargeOp(self.scope)
+		self.scope.ChargeOp()
 	}
 }
 
@@ -300,24 +313,27 @@ func (self *scanReporter) scanRange(start, end uint64, f glob.ReadSeekCloser) {
 func (self *scanReporter) scanFile(
 	ctx context.Context, output_chan chan vfilter.Row) error {
 
-	fd, err := os.Open(self.filename)
+	fd, err := os.Open(self.filename.String())
 	if err != nil {
 		return err
 	}
 	defer fd.Close()
 
 	// Fill in the file stat if possible.
-	self.file_info, _ = fd.Stat()
+	file_accessor, err := accessors.GetAccessor("file", self.scope)
+	if err == nil {
+		self.file_info, _ = file_accessor.LstatWithOSPath(self.filename)
+	}
 	self.reader = fd
 
 	err = self.rules.ScanFileWithCallback(
-		self.filename, self.yara_flag, 10*time.Second, self)
+		self.filename.String(), self.yara_flag, 10*time.Second, self)
 	if err != nil {
 		return err
 	}
 
 	// We count an op as one MB scanned.
-	vfilter.ChargeOp(self.scope)
+	self.scope.ChargeOp()
 
 	return nil
 }
@@ -333,8 +349,8 @@ type scanReporter struct {
 	number_of_hits int64
 	blocksize      uint64
 	context        int
-	file_info      os.FileInfo
-	filename       string
+	file_info      accessors.FileInfo
+	filename       *accessors.OSPath
 	base_offset    uint64
 	end            uint64
 	reader         io.ReaderAt
@@ -512,7 +528,7 @@ func (self YaraProcPlugin) Call(
 			}
 		}
 
-		vfilter.ChargeOp(scope)
+		scope.ChargeOp()
 	}()
 
 	return output_chan

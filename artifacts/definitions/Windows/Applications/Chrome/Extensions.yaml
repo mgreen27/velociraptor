@@ -21,22 +21,21 @@ parameters:
 sources:
   - precondition: |
       SELECT OS From info() where OS = 'windows'
-    queries:
-      - |
+    query: |
         /* For each user on the system, search for extension manifests
            in their home directory. */
         LET extension_manifests = SELECT * from foreach(
           row={
-             SELECT Uid, Name AS User, Directory
+             SELECT Uid, Name AS User,
+                    expand(path=Directory) as Directory
              FROM Artifact.Windows.Sys.Users()
              WHERE Name =~ userRegex
           },
           query={
-             SELECT FullPath, Mtime, Ctime, User, Uid from glob(
-               globs=Directory + extensionGlobs)
+             SELECT FullPath, Mtime, Ctime, User, Uid
+             FROM glob(root=Directory, globs=extensionGlobs)
           })
 
-      - |
         /* If the Manifest declares a default_locale then we
            load and parse the messages file. In this case the
            messages are actually stored in the locale file
@@ -71,7 +70,6 @@ sources:
                   FROM scope()
               })
 
-      - |
         LET parse_json_files = SELECT * from foreach(
            row={
              SELECT Filename as ManifestFilename,
@@ -81,12 +79,10 @@ sources:
            },
            query=maybe_read_locale_file)
 
-      - |
         LET parsed_manifest_files = SELECT * from foreach(
           row=extension_manifests,
           query=parse_json_files)
 
-      - |
         SELECT Uid, User,
 
                /* If the manifest name contains __MSG_ then the real

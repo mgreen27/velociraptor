@@ -167,6 +167,8 @@ export default class NotebookCellRenderer extends React.Component {
         showAddCellFromHunt: false,
         showAddCellFromFlow: false,
         showCreateArtifactFromCell: false,
+
+        showSuggestionSubmenu: false,
     }
 
     componentDidMount() {
@@ -227,6 +229,17 @@ export default class NotebookCellRenderer extends React.Component {
         this.setState({currently_editing: edit});
     };
 
+    getPlaceholder = () => {
+        let type = this.ace_type(this.state.cell && this.state.cell.type);
+        if (type === "vql") {
+            return "Type VQL to evaluate on the server (press ? for help)";
+        };
+        if (type === "markdown") {
+            return "Enter markdown text to render in the notebook";
+        };
+        return type;
+    }
+
     aceConfig = (ace) => {
         // Attach a completer to ACE.
         let completer = new Completer();
@@ -234,7 +247,8 @@ export default class NotebookCellRenderer extends React.Component {
 
         ace.setOptions({
             autoScrollEditorIntoView: true,
-            maxLines: 25
+            maxLines: 25,
+            placeholder: this.getPlaceholder(),
         });
 
         this.setState({ace: ace});
@@ -384,6 +398,32 @@ export default class NotebookCellRenderer extends React.Component {
                            this.state.cell.env);
     }
 
+    showSuggestions = ()=>{
+        let suggestions = this.props.notebook_metadata &&
+            this.props.notebook_metadata.suggestions;
+        if (!suggestions) {
+            return <></>;
+        }
+
+        return <>
+                   <Dropdown.Menu>
+                     { _.map(suggestions, x=>{
+                         return <Dropdown.Item
+                                  key={x.name}
+                                  onClick={()=>{
+                                      this.props.addCell(
+                                          this.state.cell.cell_id,
+                                          x.type,
+                                          x.input,
+                                          x.env);
+                                  }}
+                                  title="{x.name}">
+                                  {x.name}
+                                </Dropdown.Item>;
+                     })}
+                   </Dropdown.Menu>
+               </>;
+    }
 
     render() {
         let selected = this.state.cell.cell_id === this.props.selected_cell_id;
@@ -479,6 +519,20 @@ export default class NotebookCellRenderer extends React.Component {
                     VQL
                   </Dropdown.Item>
                   <hr/>
+
+                  <Dropdown
+                    title="Suggestion"
+                    drop="right"
+                    variant="default-outline">
+                    <Dropdown.Toggle
+                      className="dropdown-item"
+                      variant="default-outline">
+                      Suggestions
+                    </Dropdown.Toggle>
+                    { this.showSuggestions() }
+                  </Dropdown>
+                  <hr/>
+
                   <Dropdown.Item
                     title="Add Timeline"
                     onClick={()=>this.setState({showAddTimeline: true})}>

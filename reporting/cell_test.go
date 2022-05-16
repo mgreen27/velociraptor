@@ -33,6 +33,23 @@ SELECT * FROM glob(/* Foobar */globs='C:/Windows/*/*.exe')
 `}, {"Multi line VQL", `
 SELECT *, count() AS Count
 FROM certificates()
+`}, {"Empty lines before comment", `
+
+
+
+/* This is a comment */
+
+SELECT * FROM info()
+
+`}, {"Whitespace between query", `
+
+SELECT
+*
+FROM
+info()
+`}, {"Comment as first line", `
+-- hello
+SELECT * FROM info()
 `},
 }
 

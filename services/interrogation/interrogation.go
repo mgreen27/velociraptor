@@ -27,12 +27,14 @@ package interrogation
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/Velocidex/ordereddict"
 	"github.com/pkg/errors"
 	"golang.org/x/time/rate"
 	actions_proto "www.velocidex.com/golang/velociraptor/actions/proto"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
+	crypto_proto "www.velocidex.com/golang/velociraptor/crypto/proto"
 	"www.velocidex.com/golang/velociraptor/datastore"
 	"www.velocidex.com/golang/velociraptor/file_store"
 	flows_proto "www.velocidex.com/golang/velociraptor/flows/proto"
@@ -40,7 +42,6 @@ import (
 	"www.velocidex.com/golang/velociraptor/paths"
 	"www.velocidex.com/golang/velociraptor/paths/artifacts"
 	"www.velocidex.com/golang/velociraptor/result_sets"
-	"www.velocidex.com/golang/velociraptor/search"
 	"www.velocidex.com/golang/velociraptor/services"
 	"www.velocidex.com/golang/velociraptor/services/journal"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
@@ -58,15 +59,39 @@ func (self *EnrollmentService) Start(
 	logger := logging.GetLogger(config_obj, &logging.FrontendComponent)
 	logger.Info("<green>Starting</> Enrollment service.")
 
+	// Also watch for customized interrogation artifacts.
 	err := journal.WatchForCollectionWithCB(ctx, config_obj, wg,
 		"Generic.Client.Info/BasicInformation",
-		self.ProcessInterrogateResults)
+		"InterrogationService",
+		func(ctx context.Context,
+			config_obj *config_proto.Config,
+			client_id, flow_id string) error {
+			return self.ProcessInterrogateResults(
+				ctx, config_obj, client_id, flow_id,
+				"Generic.Client.Info/BasicInformation")
+		})
+	if err != nil {
+		return err
+	}
+
+	// Also watch for customized interrogation artifacts.
+	err = journal.WatchForCollectionWithCB(ctx, config_obj, wg,
+		"Custom.Generic.Client.Info/BasicInformation",
+		"InterrogationService",
+		func(ctx context.Context,
+			config_obj *config_proto.Config,
+			client_id, flow_id string) error {
+			return self.ProcessInterrogateResults(
+				ctx, config_obj, client_id, flow_id,
+				"Custom.Generic.Client.Info/BasicInformation")
+		})
 	if err != nil {
 		return err
 	}
 
 	return journal.WatchQueueWithCB(ctx, config_obj, wg,
-		"Server.Internal.Enrollment", self.ProcessEnrollment)
+		"Server.Internal.Enrollment", "InterrogationService",
+		self.ProcessEnrollment)
 }
 
 func (self *EnrollmentService) ProcessEnrollment(
@@ -79,11 +104,11 @@ func (self *EnrollmentService) ProcessEnrollment(
 	}
 
 	// Get the client info from the client info manager.
-	client_info_manager := services.GetClientInfoManager()
-	if client_info_manager == nil {
-		return errors.New("Client info manager not started")
+	client_info_manager, err := services.GetClientInfoManager()
+	if err != nil {
+		return err
 	}
-	_, err := client_info_manager.Get(client_id)
+	_, err = client_info_manager.Get(client_id)
 
 	// If we have a valid client record we do not need to
 	// interrogate. Interrogation happens automatically only once
@@ -105,6 +130,15 @@ func (self *EnrollmentService) ProcessEnrollment(
 		return err
 	}
 
+	interrogation_artifact := "Generic.Client.Info"
+
+	// Allow the user to override the basic interrogation
+	// functionality.  Check for any customized versions
+	definition, pres := repository.Get(config_obj, "Custom.Generic.Client.Info")
+	if pres {
+		interrogation_artifact = definition.Name
+	}
+
 	// Issue the flow on the client.
 	launcher, err := services.GetLauncher()
 	if err != nil {
@@ -115,14 +149,25 @@ func (self *EnrollmentService) ProcessEnrollment(
 		ctx, config_obj, vql_subsystem.NullACLManager{},
 		repository,
 		&flows_proto.ArtifactCollectorArgs{
+			Creator:   "InterrogationService",
 			ClientId:  client_id,
-			Artifacts: []string{"Generic.Client.Info"},
+			Artifacts: []string{interrogation_artifact},
+		}, func() {
+			// Notify the client
+			notifier := services.GetNotifier()
+			if notifier != nil {
+				notifier.NotifyListener(
+					config_obj, client_id, "Interrogate")
+			}
 		})
 	if err != nil {
 		return err
 	}
 
-	// Write an intermediate record while the interrogation is in flight.
+	// Write an intermediate record while the interrogation is in
+	// flight. We are here because the client_info_manager does not
+	// have the record in cache, so next Get() will just read it from
+	// disk on all minions.
 	db, err := datastore.GetDB(config_obj)
 	if err != nil {
 		return err
@@ -130,10 +175,19 @@ func (self *EnrollmentService) ProcessEnrollment(
 
 	client_path_manager := paths.NewClientPathManager(client_id)
 	client_info := &actions_proto.ClientInfo{
-		ClientId:              client_id,
-		LastInterrogateFlowId: flow_id,
+		ClientId:                    client_id,
+		FirstSeenAt:                 uint64(time.Now().Unix()),
+		LastInterrogateFlowId:       flow_id,
+		LastInterrogateArtifactName: interrogation_artifact,
 	}
-	err = db.SetSubject(config_obj, client_path_manager.Path(), client_info)
+
+	err = db.SetSubjectWithCompletion(
+		config_obj, client_path_manager.Path(), client_info, nil)
+	if err != nil {
+		return err
+	}
+
+	indexer, err := services.GetIndexer()
 	if err != nil {
 		return err
 	}
@@ -142,30 +196,24 @@ func (self *EnrollmentService) ProcessEnrollment(
 		"all", // This is used for "." search
 		client_id,
 	} {
-		err = search.SetIndex(config_obj, client_id, term)
+		err = indexer.SetIndex(client_id, term)
 		if err != nil {
 			logger := logging.GetLogger(config_obj, &logging.FrontendComponent)
 			logger.Error("Unable to set index: %v", err)
 		}
 	}
 
-	// Notify the client
-	notifier := services.GetNotifier()
-	if notifier != nil {
-		return services.GetNotifier().
-			NotifyListener(config_obj, client_id)
-	}
 	return nil
 }
 
 func (self *EnrollmentService) ProcessInterrogateResults(
 	ctx context.Context,
 	config_obj *config_proto.Config,
-	client_id, flow_id string) error {
+	client_id, flow_id, artifact string) error {
 
 	file_store_factory := file_store.GetFileStore(config_obj)
 	path_manager, err := artifacts.NewArtifactPathManager(config_obj,
-		client_id, flow_id, "Generic.Client.Info/BasicInformation")
+		client_id, flow_id, artifact)
 	if err != nil {
 		return err
 	}
@@ -187,20 +235,27 @@ func (self *EnrollmentService) ProcessInterrogateResults(
 		}
 
 		client_info = &actions_proto.ClientInfo{
-			ClientId:              client_id,
-			Hostname:              getter("Hostname"),
-			System:                getter("OS"),
-			Release:               getter("Platform") + getter("PlatformVersion"),
-			Architecture:          getter("Architecture"),
-			Fqdn:                  getter("Fqdn"),
-			ClientName:            getter("Name"),
-			ClientVersion:         getter("BuildTime"),
-			LastInterrogateFlowId: flow_id,
+			ClientId:                    client_id,
+			Hostname:                    getter("Hostname"),
+			System:                      getter("OS"),
+			Release:                     getter("Platform") + getter("PlatformVersion"),
+			Architecture:                getter("Architecture"),
+			Fqdn:                        getter("Fqdn"),
+			ClientName:                  getter("Name"),
+			ClientVersion:               getter("BuildTime"),
+			LastInterrogateFlowId:       flow_id,
+			LastInterrogateArtifactName: artifact,
 		}
 
 		label_array, ok := row.GetStrings("Labels")
 		if ok {
 			client_info.Labels = append(client_info.Labels, label_array...)
+		}
+
+		mac_addresses, ok := row.GetStrings("MACAddresses")
+		if ok {
+			client_info.MacAddresses = append(
+				client_info.MacAddresses, mac_addresses...)
 		}
 		break
 	}
@@ -215,12 +270,43 @@ func (self *EnrollmentService) ProcessInterrogateResults(
 		return err
 	}
 
-	err = db.SetSubject(config_obj,
-		client_path_manager.Path(), client_info)
+	public_key_info := &crypto_proto.PublicKey{}
+	err = db.GetSubject(config_obj, client_path_manager.Key(),
+		public_key_info)
+	if err != nil {
+		// Offline clients do not have public key files, so this is
+		// not actually an error. In that case FirstSeenAt becomes 0.
+	}
+	client_info.FirstSeenAt = public_key_info.EnrollTime
+
+	// Expire the client info manager to force it to fetch fresh data.
+	client_info_manager, err := services.GetClientInfoManager()
 	if err != nil {
 		return err
 	}
 
+	journal, err := services.GetJournal()
+	if err != nil {
+		return err
+	}
+
+	err = db.SetSubjectWithCompletion(config_obj,
+		client_path_manager.Path(), client_info,
+
+		// Completion
+		func() {
+			client_info_manager.Flush(client_id)
+
+			journal.PushRowsToArtifactAsync(config_obj,
+				ordereddict.NewDict().
+					Set("ClientId", client_id),
+				"Server.Internal.Interrogation")
+		})
+	if err != nil {
+		return err
+	}
+
+	// Set labels in the labeler.
 	if len(client_info.Labels) > 0 {
 		labeler := services.GetLabeler()
 		for _, label := range client_info.Labels {
@@ -231,31 +317,33 @@ func (self *EnrollmentService) ProcessInterrogateResults(
 		}
 	}
 
-	// Expire the client info manager to force it to fetch fresh data.
-	services.GetClientInfoManager().Flush(client_id)
+	indexer, err := services.GetIndexer()
+	if err != nil {
+		return err
+	}
 
-	// Update the client indexes for the GUI. Add any keywords we
-	// wish to be searchable in the UI here.
-	for _, term := range []string{
-		"host:" + client_info.Fqdn,
-		"host:" + client_info.Hostname} {
-		err := search.SetIndex(config_obj, client_id, term)
+	// Add MAC addresses to the index.
+	for _, mac := range client_info.MacAddresses {
+		err := indexer.SetIndex(client_id, "mac:"+mac)
 		if err != nil {
 			logger := logging.GetLogger(config_obj, &logging.FrontendComponent)
 			logger.Error("Unable to set index: %v", err)
 		}
 	}
 
-	journal, err := services.GetJournal()
-	if err != nil {
-		return err
+	// Update the client indexes for the GUI. Add any keywords we
+	// wish to be searchable in the UI here.
+	for _, term := range []string{
+		"host:" + client_info.Fqdn,
+		"host:" + client_info.Hostname} {
+		err := indexer.SetIndex(client_id, term)
+		if err != nil {
+			logger := logging.GetLogger(config_obj, &logging.FrontendComponent)
+			logger.Error("Unable to set index: %v", err)
+		}
 	}
 
-	return journal.PushRowsToArtifact(config_obj,
-		[]*ordereddict.Dict{ordereddict.NewDict().
-			Set("ClientId", client_id),
-		}, "Server.Internal.Interrogation", "server", "")
-
+	return nil
 }
 
 func StartInterrogationService(

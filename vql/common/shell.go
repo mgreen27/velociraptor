@@ -35,9 +35,10 @@ import (
 )
 
 type ShellPluginArgs struct {
-	Argv   []string `vfilter:"required,field=argv,doc=Argv to run the command with."`
-	Sep    string   `vfilter:"optional,field=sep,doc=The serparator that will be used to split the stdout into rows."`
-	Length int64    `vfilter:"optional,field=length,doc=Size of buffer to capture output per row."`
+	Argv   []string         `vfilter:"required,field=argv,doc=Argv to run the command with."`
+	Sep    string           `vfilter:"optional,field=sep,doc=The separator that will be used to split the stdout into rows."`
+	Length int64            `vfilter:"optional,field=length,doc=Size of buffer to capture output per row."`
+	Env    vfilter.LazyExpr `vfilter:"optional,field=env,doc=Environment variables to launch with."`
 }
 
 type ShellResult struct {
@@ -78,6 +79,11 @@ func (self ShellPlugin) Call(
 			return
 		}
 
+		var env *ordereddict.Dict
+		if arg.Env != nil {
+			env = vfilter.RowToDict(ctx, scope, arg.Env.Reduce(ctx))
+		}
+
 		if len(arg.Argv) == 0 {
 			scope.Log("shell: no command to run")
 			return
@@ -101,6 +107,16 @@ func (self ShellPlugin) Call(
 		}
 
 		command := exec.CommandContext(sub_ctx, arg.Argv[0], arg.Argv[1:]...)
+		if env != nil {
+			for _, k := range env.Keys() {
+				v, pres := env.GetString(k)
+				if pres {
+					command.Env = append(command.Env,
+						fmt.Sprintf("%s=%s", k, v))
+				}
+			}
+		}
+
 		stdout_pipe, err := command.StdoutPipe()
 		if err != nil {
 			scope.Log("shell: no command to run")

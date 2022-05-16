@@ -18,8 +18,9 @@
 package main
 
 import (
+	"fmt"
+
 	"github.com/sirupsen/logrus"
-	kingpin "gopkg.in/alecthomas/kingpin.v2"
 	"www.velocidex.com/golang/velociraptor/api"
 	assets "www.velocidex.com/golang/velociraptor/gui/velociraptor"
 	"www.velocidex.com/golang/velociraptor/logging"
@@ -42,37 +43,41 @@ var (
 		"Disabled the panic guard mechanism (not recommended)").Bool()
 )
 
-func doFrontendWithPanicGuard() {
+func doFrontendWithPanicGuard() error {
 	if !*frontend_disable_panic_guard {
-		writeLogOnPanic()
+		err := writeLogOnPanic()
+		if err != nil {
+			return err
+		}
 	}
-	doFrontend()
+	return doFrontend()
 }
 
-func doFrontend() {
+func doFrontend() error {
 	config_obj, err := makeDefaultConfigLoader().
 		WithRequiredFrontend().
 		WithRequiredUser().
 		WithRequiredLogging().LoadAndValidate()
-	kingpin.FatalIfError(err, "Unable to load config file")
+	if err != nil {
+		return fmt.Errorf("loading config file: %w", err)
+	}
 
 	ctx, cancel := install_sig_handler()
 	defer cancel()
-
-	if *frontend_cmd_node != "" {
-		kingpin.FatalIfError(frontend.SelectFrontend(
-			*frontend_cmd_node, config_obj),
-			"Selecting minion frontend")
-	}
 
 	sm := services.NewServiceManager(ctx, config_obj)
 	defer sm.Close()
 
 	server, err := startFrontend(sm)
-	kingpin.FatalIfError(err, "startFrontend %+v", err)
+	if err != nil {
+		return fmt.Errorf("starting frontend: %w", err)
+	}
 	defer server.Close()
 
+	// Wait here for completion.
 	sm.Wg.Wait()
+
+	return nil
 }
 
 // Start the frontend service.
@@ -91,19 +96,16 @@ func startFrontend(sm *services.Service) (*api.Builder, error) {
 		config_obj.Frontend.DoNotCompressArtifacts = true
 	}
 
-	// Load the assets into memory.
-	assets.Init()
+	// Load the assets into memory if we are the master node.
+	if services.IsMaster(config_obj) {
+		assets.Init()
+	}
 
 	// Increase resource limits.
 	server.IncreaseLimits(config_obj)
 
-	// Start the frontend service if needed. This must happen
-	// first so other services can contact the master node.
-
-	config_obj.Frontend.IsMaster = !*frontend_cmd_minion
-
 	// Minions use the RemoteFileDataStore to sync with the server.
-	if !config_obj.Frontend.IsMaster {
+	if !services.IsMaster(config_obj) {
 		logger.Info("Frontend will run as a <green>minion</>.")
 		logger.Info("<green>Enabling remote datastore</> since we are a minion.")
 		config_obj.Datastore.Implementation = "RemoteFileDataStore"
@@ -120,14 +122,23 @@ func startFrontend(sm *services.Service) (*api.Builder, error) {
 		return nil, err
 	}
 
-	// These services must start only on the frontends.
-	err = startup.StartupFrontendServices(sm)
+	// Parse extra artifacts from --definitions flag before we start
+	// any services just in case these services need to access these
+	// custom artifacts.
+	_, err = getRepository(config_obj)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse the artifacts database to detect errors early.
-	_, err = getRepository(config_obj)
+	// Load any artifacts defined in the config file before the
+	// frontend services are started so they may use them.
+	err = load_config_artifacts(config_obj)
+	if err != nil {
+		return nil, err
+	}
+
+	// These services must start only on the frontends.
+	err = startup.StartupFrontendServices(sm)
 	if err != nil {
 		return nil, err
 	}
@@ -151,8 +162,7 @@ func startFrontend(sm *services.Service) (*api.Builder, error) {
 func init() {
 	command_handlers = append(command_handlers, func(command string) bool {
 		if command == frontend_cmd.FullCommand() {
-			doFrontendWithPanicGuard()
-			return true
+			FatalIfError(frontend_cmd, doFrontendWithPanicGuard)
 		}
 		return false
 	})

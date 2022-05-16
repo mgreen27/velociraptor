@@ -2,14 +2,15 @@ package timelines
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"google.golang.org/protobuf/proto"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/datastore"
 	"www.velocidex.com/golang/velociraptor/file_store"
+	"www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/paths"
+	"www.velocidex.com/golang/velociraptor/result_sets"
 	timelines_proto "www.velocidex.com/golang/velociraptor/timelines/proto"
 	"www.velocidex.com/golang/velociraptor/utils"
 )
@@ -143,7 +144,8 @@ func NewSuperTimelineReader(
 		reader, err := NewTimelineReader(
 			file_store_factory, path_manager.GetChild(timeline.Id))
 		if err != nil {
-			fmt.Printf("NewSuperTimelineReader err: %v\n", err)
+			logger := logging.GetLogger(config_obj, &logging.FrontendComponent)
+			logger.Debug("NewSuperTimelineReader err: %v\n", err)
 			result.Close()
 			return nil, err
 		}
@@ -163,14 +165,19 @@ func (self *SuperTimelineWriter) Close() {
 	if err != nil {
 		return
 	}
-	db.SetSubject(self.config_obj, self.path_manager.Path(), self.SuperTimeline)
+	db.SetSubjectWithCompletion(
+		self.config_obj, self.path_manager.Path(), self.SuperTimeline, nil)
 }
 
 func (self *SuperTimelineWriter) AddChild(name string) (*TimelineWriter, error) {
 	new_timeline_path_manager := self.path_manager.GetChild(name)
 	file_store_factory := file_store.GetFileStore(self.config_obj)
+
 	writer, err := NewTimelineWriter(
-		file_store_factory, new_timeline_path_manager, true /* truncate */)
+		file_store_factory,
+		new_timeline_path_manager,
+		utils.BackgroundWriter,
+		result_sets.TruncateMode)
 	if err != nil {
 		return nil, err
 	}

@@ -1,13 +1,23 @@
 package paths
 
 import (
+	"fmt"
 	"strings"
+	"time"
 
 	"www.velocidex.com/golang/velociraptor/file_store/api"
 )
 
-const (
-	partition = 3
+var (
+	// Since v0.6.3 we only store client id in the index. This is a
+	// hex encoded random value of the form "C.XXYYZZ"
+	partitions = []int{
+		// Partition 1: "C.XX" - first hex digit has density of < 256
+		// Partition 2: "YY" Has density of < 256
+		// Partition 3: Rest of digits are randomly distributed. With
+		//   density of 256 up to 1.6m clients.
+		4, 2, 100,
+	}
 )
 
 type IndexPathManager struct{}
@@ -21,6 +31,25 @@ func (self IndexPathManager) IndexTerm(term, entity string) api.DSPathSpec {
 // entities indexed under the same term.
 func (self IndexPathManager) EnumerateTerms(term string) api.DSPathSpec {
 	return CLIENT_INDEX_URN.AddUnsafeChild(splitTermToParts(term)...)
+}
+
+func (self IndexPathManager) Snapshot() api.FSPathSpec {
+	return CLIENT_INDEX_URN.AddChild("snapshot").
+		AsFilestorePath().
+		SetType(api.PATH_TYPE_FILESTORE_JSON)
+}
+
+func (self IndexPathManager) SnapshotTimed() api.FSPathSpec {
+	day_name := fmt.Sprintf("%d", time.Now().Unix())
+	return CLIENT_INDEX_URN.AddChild("snapshots", day_name).
+		AsFilestorePath().
+		SetType(api.PATH_TYPE_FILESTORE_JSON)
+}
+
+func (self IndexPathManager) SnapshotDirectory() api.FSPathSpec {
+	return CLIENT_INDEX_URN.AddChild("snapshots").
+		AsFilestorePath().
+		SetType(api.PATH_TYPE_FILESTORE_ANY)
 }
 
 func (self IndexPathManager) TermPartitions(term string) []string {
@@ -37,13 +66,21 @@ func splitTermToParts(term string) []string {
 
 	// Partition the term into character groups
 	parts := []string{}
-	for i := 0; i < len(term); i += partition {
+	i := 0
+	for j := 0; j < len(partitions); j++ {
+		partition := partitions[j]
 		left := i
 		right := i + partition
 		if right > len(term) {
 			right = len(term)
 		}
 		parts = append(parts, term[left:right])
+
+		i += partition
+		if i >= len(term) {
+			break
+		}
+
 	}
 	return parts
 }

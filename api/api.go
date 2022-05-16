@@ -32,7 +32,6 @@ import (
 	errors "github.com/pkg/errors"
 
 	"github.com/Velocidex/ordereddict"
-	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 	context "golang.org/x/net/context"
@@ -42,20 +41,21 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"www.velocidex.com/golang/velociraptor/acls"
 	actions_proto "www.velocidex.com/golang/velociraptor/actions/proto"
 	"www.velocidex.com/golang/velociraptor/api/proto"
 	api_proto "www.velocidex.com/golang/velociraptor/api/proto"
 	artifacts_proto "www.velocidex.com/golang/velociraptor/artifacts/proto"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
-	"www.velocidex.com/golang/velociraptor/constants"
 	crypto_utils "www.velocidex.com/golang/velociraptor/crypto/utils"
+	"www.velocidex.com/golang/velociraptor/file_store/api"
+	"www.velocidex.com/golang/velociraptor/file_store/path_specs"
 	"www.velocidex.com/golang/velociraptor/flows"
 	flows_proto "www.velocidex.com/golang/velociraptor/flows/proto"
 	"www.velocidex.com/golang/velociraptor/grpc_client"
 	"www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/paths"
-	"www.velocidex.com/golang/velociraptor/search"
 	"www.velocidex.com/golang/velociraptor/server"
 	"www.velocidex.com/golang/velociraptor/services"
 	users "www.velocidex.com/golang/velociraptor/users"
@@ -65,10 +65,10 @@ import (
 
 type ApiServer struct {
 	proto.UnimplementedAPIServer
-	config     *config_proto.Config
-	server_obj *server.Server
-	ca_pool    *x509.CertPool
-
+	config             *config_proto.Config
+	server_obj         *server.Server
+	ca_pool            *x509.CertPool
+	wg                 *sync.WaitGroup
 	api_client_factory grpc_client.APIClientFactory
 }
 
@@ -218,17 +218,12 @@ func (self *ApiServer) CollectArtifact(
 	}
 
 	flow_id, err := launcher.ScheduleArtifactCollection(
-		ctx, self.config, acl_manager, repository, in)
+		ctx, self.config, acl_manager, repository, in, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	result.FlowId = flow_id
-
-	err = services.GetNotifier().NotifyListener(self.config, in.ClientId)
-	if err != nil {
-		return nil, err
-	}
 
 	// Log this event as an Audit event.
 	logging.GetLogger(self.config, &logging.Audit).
@@ -257,12 +252,29 @@ func (self *ApiServer) ListClients(
 			"User is not allowed to view clients.")
 	}
 
-	return search.SearchClients(ctx, self.config, in, user_name)
+	indexer, err := services.GetIndexer()
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := indexer.SearchClients(ctx, self.config, in, user_name)
+	if err != nil {
+		return nil, err
+	}
+
+	// Warm up the cache pre-emptively so we have fresh connected
+	// status
+	notifier := services.GetNotifier()
+	for _, item := range result.Items {
+		notifier.IsClientConnected(
+			ctx, self.config, item.ClientId, 0 /* timeout */)
+	}
+	return result, nil
 }
 
 func (self *ApiServer) NotifyClients(
 	ctx context.Context,
-	in *api_proto.NotificationRequest) (*empty.Empty, error) {
+	in *api_proto.NotificationRequest) (*emptypb.Empty, error) {
 
 	defer Instrument("NotifyClients")()
 
@@ -279,18 +291,15 @@ func (self *ApiServer) NotifyClients(
 		return nil, errors.New("Notifier not ready")
 	}
 
-	if in.NotifyAll {
-		self.server_obj.Info("sending notification to everyone")
-		err = notifier.NotifyAllListeners(self.config)
-
-	} else if in.ClientId != "" {
+	if in.ClientId != "" {
 		self.server_obj.Info("sending notification to %s", in.ClientId)
-		err = services.GetNotifier().NotifyListener(self.config, in.ClientId)
+		err = services.GetNotifier().NotifyListener(
+			self.config, in.ClientId, "API.NotifyClients")
 	} else {
 		return nil, status.Error(codes.InvalidArgument,
 			"client id should be specified")
 	}
-	return &empty.Empty{}, err
+	return &emptypb.Empty{}, err
 }
 
 func (self *ApiServer) LabelClients(
@@ -375,7 +384,7 @@ func (self *ApiServer) GetFlowRequests(
 
 func (self *ApiServer) GetUserUITraits(
 	ctx context.Context,
-	in *empty.Empty) (*api_proto.ApiGrrUser, error) {
+	in *emptypb.Empty) (*api_proto.ApiGrrUser, error) {
 	result := NewDefaultUserObject(self.config)
 	user_info := GetGRPCUserInfo(self.config, ctx, self.ca_pool)
 
@@ -399,12 +408,12 @@ func (self *ApiServer) GetUserUITraits(
 
 func (self *ApiServer) SetGUIOptions(
 	ctx context.Context,
-	in *api_proto.SetGUIOptionsRequest) (*empty.Empty, error) {
+	in *api_proto.SetGUIOptionsRequest) (*emptypb.Empty, error) {
 	user_info := GetGRPCUserInfo(self.config, ctx, self.ca_pool)
 
 	defer Instrument("SetGUIOptions")()
 
-	return &empty.Empty{}, users.SetUserOptions(self.config, user_info.Name, in)
+	return &emptypb.Empty{}, users.SetUserOptions(self.config, user_info.Name, in)
 }
 
 func (self *ApiServer) VFSListDirectory(
@@ -499,10 +508,28 @@ func (self *ApiServer) VFSGetBuffer(
 			"User is not allowed to view the VFS.")
 	}
 
-	path_spec := paths.NewClientPathManager(
-		in.ClientId).FSItem(in.Components)
+	// If a client id is specified, the path is relative to the
+	// client's storage directory, otherwise it is relative to the
+	// root of the filestore.
+	var pathspec api.FSPathSpec
+	if in.ClientId != "" {
+		pathspec = paths.NewClientPathManager(
+			in.ClientId).FSItem(in.Components)
+
+	} else if len(in.Components) > 0 {
+		last_idx := len(in.Components) - 1
+		fs_type, name := api.GetFileStorePathTypeFromExtension(
+			in.Components[last_idx])
+		in.Components[last_idx] = name
+		pathspec = path_specs.NewUnsafeFilestorePath(in.Components...).
+			SetType(fs_type)
+
+	} else {
+		return nil, status.Error(codes.InvalidArgument,
+			"Invalid pathspec")
+	}
 	result, err := vfsGetBuffer(
-		self.config, in.ClientId, path_spec, in.Offset, in.Length)
+		self.config, in.ClientId, pathspec, in.Offset, in.Length)
 
 	return result, err
 }
@@ -651,7 +678,7 @@ func (self *ApiServer) SetArtifactFile(
 
 	tmp_repository := manager.NewRepository()
 	artifact_definition, err := tmp_repository.LoadYaml(
-		in.Artifact, true /* validate */)
+		in.Artifact, true /* validate */, false /* built_in */)
 	if err != nil {
 		return nil, err
 	}
@@ -669,8 +696,7 @@ func (self *ApiServer) SetArtifactFile(
 			"User is not allowed to modify artifacts (%v).", permissions))
 	}
 
-	definition, err := setArtifactFile(self.config, user_name, in,
-		constants.ARTIFACT_CUSTOM_NAME_PREFIX /* required_prefix */)
+	definition, err := setArtifactFile(self.config, user_name, in, "")
 	if err != nil {
 		message := &api_proto.APIResponse{
 			Error:        true,
@@ -746,7 +772,7 @@ func (self *ApiServer) Query(
 
 func (self *ApiServer) GetServerMonitoringState(
 	ctx context.Context,
-	in *empty.Empty) (
+	in *emptypb.Empty) (
 	*flows_proto.ArtifactCollectorArgs, error) {
 
 	defer Instrument("GetServerMonitoringState")()
@@ -810,7 +836,7 @@ func (self *ApiServer) GetClientMonitoringState(
 func (self *ApiServer) SetClientMonitoringState(
 	ctx context.Context,
 	in *flows_proto.ClientEventTable) (
-	*empty.Empty, error) {
+	*emptypb.Empty, error) {
 
 	defer Instrument("SetClientMonitoringState")()
 
@@ -828,11 +854,7 @@ func (self *ApiServer) SetClientMonitoringState(
 		return nil, err
 	}
 
-	_, err = self.NotifyClients(ctx, &api_proto.NotificationRequest{
-		NotifyAll: true,
-	})
-
-	return &empty.Empty{}, err
+	return &emptypb.Empty{}, err
 }
 
 func (self *ApiServer) CreateDownloadFile(ctx context.Context,
@@ -966,6 +988,7 @@ func startAPIServer(
 			server_obj:         server_obj,
 			ca_pool:            CA_Pool,
 			api_client_factory: grpc_client.GRPCAPIClient{},
+			wg:                 wg,
 		},
 	)
 	// Register reflection service.

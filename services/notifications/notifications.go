@@ -17,24 +17,60 @@ package notifications
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Velocidex/ordereddict"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/notifications"
 	"www.velocidex.com/golang/velociraptor/services"
 	"www.velocidex.com/golang/velociraptor/services/journal"
+	"www.velocidex.com/golang/velociraptor/utils"
 )
 
+var (
+	timeoutClientPing = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "client_ping_timeout",
+		Help: "Number of times the client ping has timed out.",
+	})
+
+	notificationsSentCounter = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "notifications_send_count",
+		Help: "Number of notification messages sent.",
+	})
+
+	notificationsReceivedCounter = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "notifications_receive_count",
+		Help: "Number of notification messages received.",
+	})
+
+	isClientConnectedHistorgram = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "is_client_connected_latency",
+			Help:    "How long it takes to establish if a client is connected.",
+			Buckets: prometheus.LinearBuckets(0.1, 1, 10),
+		},
+	)
+)
+
+type tracker struct {
+	mu        sync.Mutex
+	count     int
+	connected bool
+	closed    bool
+	done      chan bool
+}
+
 type Notifier struct {
-	pool_mu           sync.Mutex
+	mu                sync.Mutex
 	notification_pool *notifications.NotificationPool
 
-	idx uint64
+	uuid int64
+
+	client_connection_tracker map[string]*tracker
 }
 
 // The notifier service watches for events from
@@ -48,7 +84,9 @@ func StartNotificationService(
 	config_obj *config_proto.Config) error {
 
 	self := &Notifier{
-		notification_pool: notifications.NewNotificationPool(),
+		notification_pool:         notifications.NewNotificationPool(),
+		uuid:                      utils.GetGUID(),
+		client_connection_tracker: make(map[string]*tracker),
 	}
 	services.RegisterNotifier(self)
 
@@ -56,7 +94,15 @@ func StartNotificationService(
 	logger.Info("<green>Starting</> the notification service.")
 
 	err := journal.WatchQueueWithCB(ctx, config_obj, wg,
-		"Server.Internal.Ping", self.ProcessPing)
+		"Server.Internal.Ping", "NotificationService",
+		self.ProcessPing)
+	if err != nil {
+		return err
+	}
+
+	err = journal.WatchQueueWithCB(ctx, config_obj, wg,
+		"Server.Internal.Pong", "NotificationService",
+		self.ProcessPong)
 	if err != nil {
 		return err
 	}
@@ -66,7 +112,8 @@ func StartNotificationService(
 	if err != nil {
 		return err
 	}
-	events, cancel := journal_service.Watch(ctx, "Server.Internal.Notifications")
+	events, cancel := journal_service.Watch(ctx,
+		"Server.Internal.Notifications", "NotificationService")
 
 	wg.Add(1)
 	go func() {
@@ -75,8 +122,8 @@ func StartNotificationService(
 
 		defer services.RegisterNotifier(nil)
 		defer func() {
-			self.pool_mu.Lock()
-			defer self.pool_mu.Unlock()
+			self.mu.Lock()
+			defer self.mu.Unlock()
 
 			self.notification_pool.Shutdown()
 			self.notification_pool = nil
@@ -97,29 +144,53 @@ func StartNotificationService(
 				if !ok {
 					continue
 				}
-
-				if target == "Regex" {
-					regex_str, ok := event.GetString("Regex")
-					if ok {
-						regex, err := regexp.Compile(regex_str)
-						if err != nil {
-							logger.Error("Notification service: "+
-								"Unable to compiler regex '%v': %v\n",
-								regex_str, err)
-							continue
-						}
-						self.notification_pool.NotifyByRegex(config_obj, regex)
-					}
-
-				} else if target == "All" {
-					self.notification_pool.NotifyAll(config_obj)
-				} else {
-					self.notification_pool.Notify(target)
-				}
+				notificationsReceivedCounter.Inc()
+				self.notification_pool.Notify(target)
 			}
 		}
 	}()
 
+	return nil
+}
+
+func (self *Notifier) ProcessPong(ctx context.Context,
+	config_obj *config_proto.Config,
+	row *ordereddict.Dict) error {
+
+	// Ignore messages coming from us.
+	from, pres := row.GetInt64("From")
+	if !pres || from == 0 || from == self.uuid {
+		return nil
+	}
+
+	notify_target, pres := row.GetString("NotifyTarget")
+	if !pres {
+		return nil
+	}
+
+	connected, pres := row.GetBool("Connected")
+	if !pres {
+		return nil
+	}
+
+	self.mu.Lock()
+	tracker, pres := self.client_connection_tracker[notify_target]
+	self.mu.Unlock()
+	if !pres {
+		return nil
+	}
+
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+
+	if pres && !tracker.closed {
+		tracker.connected = connected
+		tracker.count--
+		if tracker.count <= 0 && !tracker.closed {
+			close(tracker.done)
+			tracker.closed = true
+		}
+	}
 	return nil
 }
 
@@ -133,8 +204,9 @@ func (self *Notifier) ProcessPing(ctx context.Context,
 		return nil
 	}
 
-	if !self.notification_pool.IsClientConnected(client_id) {
-		return nil
+	journal, err := services.GetJournal()
+	if err != nil {
+		return err
 	}
 
 	notify_target, pres := row.GetString("NotifyTarget")
@@ -142,61 +214,70 @@ func (self *Notifier) ProcessPing(ctx context.Context,
 		return nil
 	}
 
-	// Notify the target of the Ping.
-	return self.NotifyListener(config_obj, notify_target)
+	return journal.PushRowsToArtifact(config_obj,
+		[]*ordereddict.Dict{ordereddict.NewDict().
+			Set("ClientId", client_id).
+			Set("NotifyTarget", notify_target).
+			Set("From", self.uuid).
+			Set("Connected", self.notification_pool.IsClientConnected(client_id))},
+		"Server.Internal.Pong", "server", "")
 }
 
 func (self *Notifier) ListenForNotification(client_id string) (chan bool, func()) {
-	self.pool_mu.Lock()
+	self.mu.Lock()
 	if self.notification_pool == nil {
 		self.notification_pool = notifications.NewNotificationPool()
 	}
 	notification_pool := self.notification_pool
-	self.pool_mu.Unlock()
+	self.mu.Unlock()
 
 	return notification_pool.Listen(client_id)
 }
 
-func (self *Notifier) NotifyAllListeners(config_obj *config_proto.Config) error {
+func (self *Notifier) NotifyListener(config_obj *config_proto.Config,
+	id, tag string) error {
 	journal, err := services.GetJournal()
 	if err != nil {
 		return err
 	}
 
+	// We need to send this ASAP so we do not use an async send.
+	notificationsSentCounter.Inc()
 	return journal.PushRowsToArtifact(config_obj,
-		[]*ordereddict.Dict{ordereddict.NewDict().Set("Target", "All")},
+		[]*ordereddict.Dict{ordereddict.NewDict().
+			Set("Tag", tag).
+			Set("Target", id)},
 		"Server.Internal.Notifications", "server", "",
 	)
 }
 
-func (self *Notifier) NotifyByRegex(
-	config_obj *config_proto.Config, regex string) error {
-	journal, err := services.GetJournal()
-	if err != nil {
-		return err
+func (self *Notifier) NotifyDirectListener(client_id string) {
+	if self.notification_pool.IsClientConnected(client_id) {
+		self.notification_pool.Notify(client_id)
 	}
-
-	return journal.PushRowsToArtifact(config_obj,
-		[]*ordereddict.Dict{ordereddict.NewDict().Set("Target", "Regex").
-			Set("Regex", regex)},
-		"Server.Internal.Notifications", "server", "",
-	)
 }
 
-func (self *Notifier) NotifyListener(config_obj *config_proto.Config, id string) error {
+func (self *Notifier) NotifyListenerAsync(config_obj *config_proto.Config,
+	id, tag string) {
 	journal, err := services.GetJournal()
 	if err != nil {
-		return err
+		return
 	}
 
-	return journal.PushRowsToArtifact(config_obj,
-		[]*ordereddict.Dict{ordereddict.NewDict().Set("Target", id)},
-		"Server.Internal.Notifications", "server", "",
-	)
+	notificationsSentCounter.Inc()
+	journal.PushRowsToArtifactAsync(config_obj,
+		ordereddict.NewDict().
+			Set("Tag", tag).
+			Set("Target", id),
+		"Server.Internal.Notifications")
 }
 
 func (self *Notifier) IsClientDirectlyConnected(client_id string) bool {
 	return self.notification_pool.IsClientConnected(client_id)
+}
+
+func (self *Notifier) ListClients() []string {
+	return self.notification_pool.ListClients()
 }
 
 func (self *Notifier) IsClientConnected(
@@ -204,13 +285,41 @@ func (self *Notifier) IsClientConnected(
 	config_obj *config_proto.Config,
 	client_id string, timeout int) bool {
 
-	// Get a unique ID
-	idx := atomic.AddUint64(&self.idx, 1)
+	timer := prometheus.NewTimer(prometheus.ObserverFunc(func(v float64) {
+		isClientConnectedHistorgram.Observe(v)
+	}))
+	defer timer.ObserveDuration()
 
-	// Watch for Ping replies on this notification.
-	id := fmt.Sprintf("IsClientConnected%v", idx)
-	done, cancel := self.ListenForNotification(id)
-	defer cancel()
+	// Shortcut if the client is directly connected.
+	if self.IsClientDirectlyConnected(client_id) {
+		return true
+	}
+
+	// No directly connected minions right now, and the client is not
+	// connected to us - therefore the client is not available.
+	minion_count := services.GetFrontendManager().GetMinionCount()
+	if minion_count == 0 {
+		return false
+	}
+
+	// We deem a client connected if the last ping time is within 10 seconds
+	client_info_manager, err := services.GetClientInfoManager()
+	if err != nil {
+		return false
+	}
+
+	stats, err := client_info_manager.GetStats(client_id)
+	if err != nil {
+		return false
+	}
+
+	recent := uint64(time.Now().UnixNano()/1000) - 20*1000000
+	if stats.Ping > recent {
+		return true
+	}
+
+	// Get a unique id for this request.
+	id := fmt.Sprintf("IsClientConnected%v", utils.GetId())
 
 	// Send ping to all nodes, they will reply with a
 	// notification.
@@ -219,6 +328,17 @@ func (self *Notifier) IsClientConnected(
 		return false
 	}
 
+	// Channel to be signalled when all responses come back.
+	done := make(chan bool)
+	self.mu.Lock()
+	// Install a tracker to keep track of this request.
+	self.client_connection_tracker[id] = &tracker{
+		count: minion_count,
+		done:  done,
+	}
+	self.mu.Unlock()
+
+	// Push request immediately for low latency.
 	err = journal.PushRowsToArtifact(config_obj,
 		[]*ordereddict.Dict{ordereddict.NewDict().
 			Set("ClientId", client_id).
@@ -231,11 +351,23 @@ func (self *Notifier) IsClientConnected(
 	// Now wait here for the reply.
 	select {
 	case <-done:
-		// Client is found!
-		return true
+		// Signal that all minions indicated if the client was found
+		// or not.
 
 	case <-time.After(time.Duration(timeout) * time.Second):
-		// Nope - not found within the timeout.
-		return false
+		if timeout > 0 {
+			timeoutClientPing.Inc()
+		}
+		// Nope - not found within the timeout just give up.
 	}
+
+	self.mu.Lock()
+	tracker := self.client_connection_tracker[id]
+	delete(self.client_connection_tracker, id)
+	self.mu.Unlock()
+
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+
+	return tracker.connected
 }

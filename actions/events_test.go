@@ -2,6 +2,7 @@ package actions_test
 
 import (
 	"context"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"www.velocidex.com/golang/velociraptor/responder"
 	"www.velocidex.com/golang/velociraptor/services"
 	"www.velocidex.com/golang/velociraptor/services/client_monitoring"
+	"www.velocidex.com/golang/velociraptor/services/indexing"
 	"www.velocidex.com/golang/velociraptor/services/labels"
 	"www.velocidex.com/golang/velociraptor/utils"
 	"www.velocidex.com/golang/velociraptor/vtesting"
@@ -51,8 +53,9 @@ type EventsTestSuite struct {
 func (self *EventsTestSuite) SetupTest() {
 	self.TestSuite.SetupTest()
 
-	assert.NoError(
-		self.T(), self.Sm.Start(client_monitoring.StartClientMonitoringService))
+	assert.NoError(self.T(),
+		self.Sm.Start(client_monitoring.StartClientMonitoringService))
+	assert.NoError(self.T(), self.Sm.Start(indexing.StartIndexingService))
 
 	self.client_id = "C.2232"
 	self.Clock = &utils.IncClock{}
@@ -194,6 +197,9 @@ func (self *EventsTestSuite) TestEventTableUpdate() {
 
 	// But the tables have not really changed, so the query will
 	// not be updated.
+	if len(actions.QueryLog.Get()) != 0 {
+		fmt.Printf("Queries that ran %v\n", actions.QueryLog.Get())
+	}
 	assert.Equal(self.T(), len(actions.QueryLog.Get()), 0)
 
 	// Now lets set the label to Label1

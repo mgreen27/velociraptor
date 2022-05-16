@@ -39,7 +39,6 @@ package datastore
 import (
 	"fmt"
 	"io"
-	"io/fs"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -79,7 +78,7 @@ func (self *FileBaseDataStore) GetSubject(
 	urn api.DSPathSpec,
 	message proto.Message) error {
 
-	defer InstrumentWithDelay("read", urn)()
+	defer InstrumentWithDelay("read", "FileBaseDataStore", urn)()
 
 	Trace(config_obj, "GetSubject", urn)
 	serialized_content, err := readContentFromFile(
@@ -121,38 +120,9 @@ func (self *FileBaseDataStore) GetSubject(
 	return nil
 }
 
-func (self *FileBaseDataStore) Walk(config_obj *config_proto.Config,
-	root api.DSPathSpec, walkFn WalkFunc) error {
-
-	TraceDirectory(config_obj, "Walk", root)
-	all_children, err := self.ListChildren(config_obj, root)
-	if err != nil {
-		return err
-	}
-
-	for _, child := range all_children {
-		// Recurse into directories
-		if child.IsDir() {
-			err := self.Walk(config_obj, child, walkFn)
-			if err != nil {
-				// Do not quit the walk early.
-			}
-
-		} else {
-			err := walkFn(child)
-			if err == StopIteration {
-				return nil
-			}
-			continue
-		}
-	}
-
-	return nil
-}
-
 func (self *FileBaseDataStore) Debug(config_obj *config_proto.Config) {
 	filepath.Walk(config_obj.Datastore.Location,
-		func(path string, info fs.FileInfo, err error) error {
+		func(path string, info os.FileInfo, err error) error {
 			fmt.Printf("%v -> %v %v\n", path, info.Size(), info.Mode())
 			return nil
 		})
@@ -163,7 +133,23 @@ func (self *FileBaseDataStore) SetSubject(
 	urn api.DSPathSpec,
 	message proto.Message) error {
 
-	defer InstrumentWithDelay("write", urn)()
+	return self.SetSubjectWithCompletion(config_obj, urn, message, nil)
+}
+
+func (self *FileBaseDataStore) SetSubjectWithCompletion(
+	config_obj *config_proto.Config,
+	urn api.DSPathSpec,
+	message proto.Message, completion func()) error {
+
+	defer InstrumentWithDelay("write", "FileBaseDataStore", urn)()
+
+	// Make sure to call the completer on all exit points
+	// (FileBaseDataStore is actually synchronous).
+	defer func() {
+		if completion != nil {
+			completion()
+		}
+	}()
 
 	Trace(config_obj, "SetSubject", urn)
 
@@ -183,11 +169,23 @@ func (self *FileBaseDataStore) SetSubject(
 	return writeContentToFile(config_obj, urn, serialized_content)
 }
 
+func (self *FileBaseDataStore) DeleteSubjectWithCompletion(
+	config_obj *config_proto.Config,
+	urn api.DSPathSpec, completion func()) error {
+
+	err := self.DeleteSubject(config_obj, urn)
+	if completion != nil {
+		completion()
+	}
+
+	return err
+}
+
 func (self *FileBaseDataStore) DeleteSubject(
 	config_obj *config_proto.Config,
 	urn api.DSPathSpec) error {
 
-	defer InstrumentWithDelay("delete", urn)()
+	defer InstrumentWithDelay("delete", "FileBaseDataStore", urn)()
 
 	Trace(config_obj, "DeleteSubject", urn)
 
@@ -206,7 +204,7 @@ func (self *FileBaseDataStore) DeleteSubject(
 func listChildNames(config_obj *config_proto.Config,
 	urn api.DSPathSpec) (
 	[]string, error) {
-	defer InstrumentWithDelay("list", urn)()
+	defer InstrumentWithDelay("list", "FileBaseDataStore", urn)()
 
 	return utils.ReadDirNames(
 		urn.AsDatastoreDirectory(config_obj))
@@ -215,7 +213,7 @@ func listChildNames(config_obj *config_proto.Config,
 func listChildren(config_obj *config_proto.Config,
 	urn api.DSPathSpec) ([]os.FileInfo, error) {
 
-	defer InstrumentWithDelay("list", urn)()
+	defer InstrumentWithDelay("list", "FileBaseDataStore", urn)()
 
 	children, err := utils.ReadDirUnsorted(
 		urn.AsDatastoreDirectory(config_obj))
@@ -224,6 +222,20 @@ func listChildren(config_obj *config_proto.Config,
 			return []os.FileInfo{}, nil
 		}
 		return nil, errors.WithStack(err)
+	}
+
+	max_dir_size := int(config_obj.Datastore.MaxDirSize)
+	if max_dir_size == 0 {
+		max_dir_size = 50000
+	}
+
+	if len(children) > max_dir_size {
+		logger := logging.GetLogger(config_obj, &logging.FrontendComponent)
+		logger.Error(
+			"listChildren: Encountered a large directory %v (%v files), "+
+				"truncating to %v", urn.AsClientPath(),
+			len(children), max_dir_size)
+		return children[:max_dir_size], nil
 	}
 	return children, nil
 }
@@ -400,7 +412,12 @@ func (self *FileBaseDataStore) GetBuffer(
 
 func (self *FileBaseDataStore) SetBuffer(
 	config_obj *config_proto.Config,
-	urn api.DSPathSpec, data []byte) error {
+	urn api.DSPathSpec, data []byte, completion func()) error {
 
-	return writeContentToFile(config_obj, urn, data)
+	err := writeContentToFile(config_obj, urn, data)
+
+	if completion != nil {
+		completion()
+	}
+	return err
 }

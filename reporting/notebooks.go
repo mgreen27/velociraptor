@@ -8,6 +8,7 @@ import (
 	"html"
 	"io"
 	"io/ioutil"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -19,6 +20,7 @@ import (
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/datastore"
 	"www.velocidex.com/golang/velociraptor/file_store"
+	"www.velocidex.com/golang/velociraptor/file_store/api"
 	"www.velocidex.com/golang/velociraptor/json"
 	"www.velocidex.com/golang/velociraptor/paths"
 	"www.velocidex.com/golang/velociraptor/result_sets"
@@ -213,13 +215,12 @@ func ExportNotebookToZip(
 	zip_writer := zip.NewWriter(fd)
 	defer zip_writer.Close()
 
-	cell_copier := func(notebook_id, cell_id string) {
-		path_manager := paths.NewNotebookPathManager(notebook_id)
-		exported_path_manager := paths.NewNotebookExportPathManager(
-			notebook_id)
+	exported_path_manager := paths.NewNotebookExportPathManager(
+		notebook.NotebookId)
 
+	cell_copier := func(cell_id string) {
 		children, err := file_store_factory.ListDirectory(
-			path_manager.CellDirectory(cell_id))
+			notebook_path_manager.CellDirectory(cell_id))
 		if err != nil {
 			return
 		}
@@ -237,7 +238,7 @@ func ExportNotebookToZip(
 			}
 
 			fd, err := file_store_factory.ReadFile(
-				path_manager.Cell(cell_id).Item(child.Name()))
+				notebook_path_manager.Cell(cell_id).Item(child.Name()))
 			if err != nil {
 				continue
 			}
@@ -248,7 +249,16 @@ func ExportNotebookToZip(
 	}
 
 	for _, cell := range notebook.CellMetadata {
-		cell_copier(notebook.NotebookId, cell.CellId)
+		cell_copier(cell.CellId)
+	}
+
+	// Copy the uploads
+	err = storeUploads(ctx, config_obj,
+		notebook_path_manager, exported_path_manager,
+		zip_writer, file_store_factory)
+	if err != nil {
+		fd.Close()
+		return err
 	}
 
 	f, err := zip_writer.Create("Notebook.yaml")
@@ -258,6 +268,46 @@ func ExportNotebookToZip(
 	}
 	_, err = f.Write(serialized)
 	return err
+}
+
+func storeUploads(
+	ctx context.Context,
+	config_obj *config_proto.Config,
+	notebook_path_manager *paths.NotebookPathManager,
+	export_path_manager *paths.NotebookExportPathManager,
+	zip_writer *zip.Writer,
+	file_store_factory api.FileStore) error {
+
+	children, err := file_store_factory.ListDirectory(
+		notebook_path_manager.UploadsDir())
+	if err != nil {
+		return err
+	}
+
+	for _, child := range children {
+		out_filename := export_path_manager.UploadPath(child.Name())
+		// In Zip files, members should have no leading /
+		zip_out_filename := strings.TrimPrefix(
+			out_filename.AsClientPath(), "/")
+
+		out_fd, err := zip_writer.Create(zip_out_filename)
+		if err != nil {
+			continue
+		}
+
+		fd, err := file_store_factory.ReadFile(child.PathSpec())
+		if err != nil {
+			continue
+		}
+		defer fd.Close()
+
+		_, err = utils.Copy(ctx, out_fd, fd)
+		if err != nil {
+			continue
+		}
+	}
+
+	return nil
 }
 
 func ExportNotebookToHTML(
@@ -331,7 +381,7 @@ func ExportNotebookToHTML(
 			})
 
 		// Expand tables
-		cell_output = csvViewerRegexp.ReplaceAllStringFunc(
+		new_cell_output := csvViewerRegexp.ReplaceAllStringFunc(
 			cell_output, func(in string) string {
 				result, err := convertCSVTags(ctx, config_obj, in, cell)
 				if err != nil {
@@ -342,7 +392,7 @@ func ExportNotebookToHTML(
 				return result
 			})
 
-		_, err := output.Write([]byte(cell_output))
+		_, err := output.Write([]byte(new_cell_output))
 		if err != nil {
 			return err
 		}
@@ -375,8 +425,13 @@ func convertCSVTags(
 		return "", errors.New("Unexpected regexp match")
 	}
 
+	unescaped, err := url.QueryUnescape(m[1])
+	if err != nil {
+		return "", errors.New("Unexpected regexp match")
+	}
+
 	params := &api_proto.GetTableRequest{}
-	err = json.Unmarshal([]byte(m[1]), params)
+	err = json.Unmarshal([]byte(unescaped), params)
 	if err != nil {
 		return "", err
 	}

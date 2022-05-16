@@ -28,13 +28,16 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/golang/protobuf/proto"
 	errors "github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
+	"google.golang.org/protobuf/proto"
 	"www.velocidex.com/golang/velociraptor/actions"
 	actions_proto "www.velocidex.com/golang/velociraptor/actions/proto"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
@@ -47,11 +50,16 @@ import (
 )
 
 var (
+	// Server sent a redirect message.
 	RedirectError = errors.New("RedirectError")
 
+	// Can be sent from connector's Post() when the server requires
+	// enrolment (sending HTTP 406 status).
+	EnrolError = errors.New("EnrolError")
+
+	mu   sync.Mutex
 	Rand func(int) int = rand.Intn
 
-	mu           sync.Mutex
 	proxyHandler = http.ProxyFromEnvironment
 )
 
@@ -101,8 +109,11 @@ func (self *Enroller) MaybeEnrol() {
 // it can be mocked.
 type IConnector interface {
 	GetCurrentUrl(handler string) string
-	Post(handler string, data []byte, priority bool) (*http.Response, error)
-	ReKeyNextServer()
+	Post(ctx context.Context,
+		name string, // Name of the component calling Post (used for logging)
+		handler string, // The URL handler we post to
+		data []byte, priority bool) (*bytes.Buffer, error)
+	ReKeyNextServer(ctx context.Context)
 	ServerName() string
 }
 
@@ -159,9 +170,16 @@ func NewHTTPConnector(
 		maxPollDev = 30
 	}
 
+	CA_Pool := x509.NewCertPool()
+	err := crypto.AddDefaultCerts(config_obj.Client, CA_Pool)
+	if err != nil {
+		return nil, err
+	}
+
 	tls_config := &tls.Config{
 		MinVersion:         tls.VersionTLS12,
 		ClientSessionCache: tls.NewLRUClientSessionCache(100),
+		RootCAs:            CA_Pool,
 	}
 
 	// For self signed certificates we must ignore the server name
@@ -169,13 +187,21 @@ func NewHTTPConnector(
 	if config_obj.Client.UseSelfSignedSsl {
 		logger.Info("Expecting self signed certificate for server.")
 
-		CA_Pool := x509.NewCertPool()
-		CA_Pool.AppendCertsFromPEM([]byte(config_obj.Client.CaCertificate))
-
+		// We only trust **our** pinned server name for HTTP comms.
+		// NOTE: This stops an api cert from being presented for the
+		// server. This setting also allows the server to be accessed
+		// by e.g. localhost despite the certificate being issued to
+		// VelociraptorServer.
 		tls_config.ServerName = config_obj.Client.PinnedServerName
+	} else {
 
-		// We only trust **our** root CA.
-		tls_config.RootCAs = CA_Pool
+		// Not self signed - add the public roots for verifications.
+		crypto.AddPublicRoots(tls_config.RootCAs)
+	}
+
+	timeout := config_obj.Client.ConnectionTimeout
+	if timeout == 0 {
+		timeout = 300 // 5 Min default
 	}
 
 	self := &HTTPConnector{
@@ -187,7 +213,7 @@ func NewHTTPConnector(
 		// Start with a random URL from the set of
 		// preconfigured URLs. This should distribute clients
 		// randomly to all frontends.
-		current_url_idx: Rand(len(urls)),
+		current_url_idx: GetRand()(len(urls)),
 
 		minPoll:    time.Duration(1) * time.Second,
 		maxPoll:    time.Duration(max_poll) * time.Second,
@@ -202,16 +228,16 @@ func NewHTTPConnector(
 			},
 			Transport: &http.Transport{
 				DialContext: (&net.Dialer{
-					Timeout:   300 * time.Second,
-					KeepAlive: 300 * time.Second,
+					Timeout:   time.Duration(timeout) * time.Second,
+					KeepAlive: time.Duration(timeout) * time.Second,
 					DualStack: true,
 				}).DialContext,
 				Proxy:                 proxyHandler,
 				MaxIdleConns:          100,
-				IdleConnTimeout:       300 * time.Second,
-				TLSHandshakeTimeout:   100 * time.Second,
-				ExpectContinueTimeout: 10 * time.Second,
-				ResponseHeaderTimeout: 100 * time.Second,
+				IdleConnTimeout:       time.Duration(timeout) * time.Second,
+				TLSHandshakeTimeout:   time.Duration(timeout) * time.Second,
+				ExpectContinueTimeout: time.Duration(timeout) * time.Second,
+				ResponseHeaderTimeout: time.Duration(timeout) * time.Second,
 				TLSClientConfig:       tls_config,
 			},
 		},
@@ -233,17 +259,32 @@ func (self *HTTPConnector) GetCurrentUrl(handler string) string {
 	return self.urls[self.current_url_idx] + handler
 }
 
-func (self *HTTPConnector) Post(handler string, data []byte, urgent bool) (
-	*http.Response, error) {
+func (self *HTTPConnector) Post(
+	ctx context.Context, name, handler string,
+	data []byte, urgent bool) (*bytes.Buffer, error) {
 
 	reader := bytes.NewReader(data)
-	req, err := http.NewRequest("POST", self.GetCurrentUrl(handler), reader)
+	req, err := http.NewRequestWithContext(ctx,
+		"POST", self.GetCurrentUrl(handler), reader)
 	if err != nil {
 		self.logger.Info("Post to %v returned %v - advancing to next server\n",
 			self.GetCurrentUrl(handler), err)
-		self.advanceToNextServer()
+		self.advanceToNextServer(ctx)
 		return nil, errors.WithStack(err)
 	}
+
+	trace := &httptrace.ClientTrace{
+		GotConn: func(connInfo httptrace.GotConnInfo) {
+			self.logger.WithFields(logrus.Fields{
+				"LocalAddr": connInfo.Conn.LocalAddr(),
+				"Reused":    connInfo.Reused,
+				"WasIdle":   connInfo.WasIdle,
+				"IdleTime":  connInfo.IdleTime,
+			}).Debug("Connection Info")
+		},
+	}
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+
 	req.Header.Set("User-Agent", constants.USER_AGENT)
 	req.Header.Set("Content-Type", "application/binary")
 	if urgent {
@@ -256,18 +297,24 @@ func (self *HTTPConnector) Post(handler string, data []byte, urgent bool) (
 			self.GetCurrentUrl(handler), err)
 
 		// POST error - rotate to next URL
-		self.advanceToNextServer()
+		self.advanceToNextServer(ctx)
 		return nil, errors.WithStack(err)
 	}
+	// Must make sure to close the body or we leak sockets.
+	defer resp.Body.Close()
+
+	self.logger.Info("%s: sent %d bytes, response with status: %v",
+		name, len(data), resp.Status)
 
 	// Handle redirect. Frontends may redirect us to other
 	// frontends.
-	if resp.StatusCode == 301 {
+	switch resp.StatusCode {
+	case 301:
 		dest, pres := resp.Header["Location"]
 		if !pres || len(dest) == 0 {
 			self.logger.Info("Redirect without location header - advancing\n")
 
-			self.advanceToNextServer()
+			self.advanceToNextServer(ctx)
 			return nil, errors.New("Redirect without a Location header?")
 		}
 
@@ -312,33 +359,44 @@ func (self *HTTPConnector) Post(handler string, data []byte, urgent bool) (
 			// For safety we wait after redirect in case we end up
 			// in a redirect loop.
 			wait := self.maxPoll + time.Duration(
-				Rand(int(self.maxPollDev)))*time.Second
+				GetRand()(int(self.maxPollDev)))*time.Second
 			self.logger.Info("Waiting after redirect: %v", wait)
 			<-self.clock.After(wait)
 		}
 
 		return nil, RedirectError
 
-	} else if resp.StatusCode == 406 {
-		return resp, nil
+	case 406:
+		return nil, EnrolError
 
-	} else if resp.StatusCode != 200 {
+	case 200:
+		encrypted := &bytes.Buffer{}
+
+		// We need to be able to cancel the read here so we do not use
+		// ioutil.ReadAll()
+		n, err := utils.Copy(ctx, encrypted, resp.Body)
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+
+		self.logger.Info("%s: received %d bytes", name, n)
+
+		// Remember the last successful index.
+		self.mu.Lock()
+		self.last_success_idx = self.current_url_idx
+		self.mu.Unlock()
+
+		return encrypted, nil
+
+	default:
 		self.logger.Info("Post to %v returned %v - advancing\n",
 			self.GetCurrentUrl(handler), resp.StatusCode)
 
 		// POST error - rotate to next URL
-		self.advanceToNextServer()
+		self.advanceToNextServer(ctx)
 
 		return nil, errors.New(resp.Status)
-
 	}
-
-	// Remember the last successful index.
-	self.mu.Lock()
-	self.last_success_idx = self.current_url_idx
-	self.mu.Unlock()
-
-	return resp, nil
 }
 
 // When we have any failures contacting any server, we advance our url
@@ -346,7 +404,7 @@ func (self *HTTPConnector) Post(handler string, data []byte, urgent bool) (
 // loop we wait to backoff.  Therefore when switching from one FE to
 // another we wont necessarily wait but if all frontends are down we
 // wait once per loop.
-func (self *HTTPConnector) advanceToNextServer() {
+func (self *HTTPConnector) advanceToNextServer(ctx context.Context) {
 	self.mu.Lock()
 	defer self.mu.Unlock()
 
@@ -362,15 +420,26 @@ func (self *HTTPConnector) advanceToNextServer() {
 	// sleep to back off.
 	if self.current_url_idx == self.last_success_idx {
 		wait := self.maxPoll + time.Duration(
-			Rand(int(self.maxPollDev)))*time.Second
+			GetRand()(int(self.maxPollDev)))*time.Second
 
 		self.logger.Info(
 			"Waiting for a reachable server: %v", wait)
 
 		// Add random wait between polls to avoid
 		// synchronization of endpoints.
-		<-self.clock.After(wait)
+		select {
+		case <-self.clock.After(wait):
+		case <-ctx.Done():
+			return
+		}
 	}
+}
+
+func GetRand() func(int) int {
+	mu.Lock()
+	defer mu.Unlock()
+
+	return Rand
 }
 
 func (self *HTTPConnector) String() string {
@@ -380,18 +449,24 @@ func (self *HTTPConnector) String() string {
 // Contact the server and verify its public key. May block
 // indefinitely until a valid trusted server is found. After this
 // function completes the current URL is pointed at a valid server
-// which should be used for all further Post() optations.  Note that
+// which should be used for all further Post() operations.  Note that
 // this function holds a lock on the connector for the duration of the
 // call. All other POST operations will be blocked until a valid
 // server is found.
-func (self *HTTPConnector) ReKeyNextServer() {
+func (self *HTTPConnector) ReKeyNextServer(ctx context.Context) {
 	for {
-		err := self.rekeyNextServer()
-		if err == nil {
+		select {
+		case <-ctx.Done():
 			return
-		}
 
-		self.advanceToNextServer()
+		default:
+			err := self.rekeyNextServer(ctx)
+			if err == nil {
+				return
+			}
+
+			self.advanceToNextServer(ctx)
+		}
 	}
 }
 
@@ -402,7 +477,7 @@ func (self *HTTPConnector) ServerName() string {
 	return self.server_name
 }
 
-func (self *HTTPConnector) rekeyNextServer() error {
+func (self *HTTPConnector) rekeyNextServer(ctx context.Context) error {
 	self.mu.Lock()
 	defer self.mu.Unlock()
 
@@ -419,6 +494,13 @@ func (self *HTTPConnector) rekeyNextServer() error {
 	resp, err := self.client.Do(req)
 	if err != nil {
 		self.logger.Info("While getting %v: %v", url, err)
+		if strings.Contains(err.Error(), "cannot validate certificate") {
+			self.logger.Info("If you intend to connect to a self signed " +
+				"VelociraptorServer, make sure Client.use_self_signed_ssl " +
+				"is set to true in the client config. If you want to use " +
+				"external CAs, make sure to include all X509 root " +
+				"certificates in Client.Crypto.root_certs.")
+		}
 		self.server_name = ""
 		return err
 	}
@@ -471,7 +553,11 @@ type NotificationReader struct {
 	minPoll, maxPoll      time.Duration
 	maxPollDev            uint64
 	current_poll_duration time.Duration
-	IsPaused              int32
+
+	// Pause the PumpRingBufferToSendMessage loop - stops transmitting
+	// data to the server temporarily. New data will still be queued
+	// in the ring buffer if there is room.
+	IsPaused int32
 
 	// A callback that will be notified when the reader
 	// completes. In the real client this is a fatal error since
@@ -544,24 +630,22 @@ func (self *NotificationReader) sendMessageList(
 			// POST again.
 			self.logger.Info("Failed to fetch URL %v: %v",
 				self.connector.GetCurrentUrl(self.handler), err)
-
-		} else {
-			// If we are paused we need to wait a bit before trying again
-
-			// Add random wait between polls to avoid
-			// synchronization of endpoints.
-			wait := self.maxPoll + time.Duration(
-				Rand(int(self.maxPollDev)))*time.Second
-			self.logger.Info("Sleeping for %v", wait)
-
-			select {
-			case <-ctx.Done():
-				return
-
-			case <-self.clock.After(wait):
-			}
 		}
 
+		// If we are paused we need to wait a bit before trying again
+
+		// Add random wait between polls to avoid
+		// synchronization of endpoints.
+		wait := self.maxPoll + time.Duration(
+			GetRand()(int(self.maxPollDev)))*time.Second
+		self.logger.Info("Sleeping for %v", wait)
+
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-self.clock.After(wait):
+		}
 	}
 
 }
@@ -572,7 +656,7 @@ func (self *NotificationReader) sendToURL(
 	urgent bool) (err error) {
 
 	if self.connector.ServerName() == "" {
-		self.connector.ReKeyNextServer()
+		self.connector.ReKeyNextServer(ctx)
 	}
 
 	self.logger.Info("%s: Connected to %s", self.name,
@@ -586,37 +670,21 @@ func (self *NotificationReader) sendToURL(
 		return err
 	}
 
-	resp, err := self.connector.Post(self.handler, cipher_text, urgent)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+	encrypted, err := self.connector.Post(ctx, self.name,
+		self.handler, cipher_text, urgent)
 
 	// Enrollment is pretty quick so we need to retry sooner -
 	// return no error so the next poll happens in minPoll.
-	if resp.StatusCode == 406 {
+	if err == EnrolError {
 		if self.enroller != nil {
 			self.enroller.MaybeEnrol()
 		}
 		return nil
 	}
 
-	self.logger.Info("%s: sent %d bytes, response with status: %v",
-		self.name, len(cipher_text), resp.Status)
-	if resp.StatusCode != 200 {
-		return errors.New(resp.Status)
-	}
-
-	encrypted := &bytes.Buffer{}
-
-	// We need to be able to cancel the read here so we do not use
-	// ioutil.ReadAll()
-	n, err := utils.Copy(ctx, encrypted, resp.Body)
 	if err != nil {
-		return errors.WithStack(err)
+		return err
 	}
-
-	self.logger.Info("%s: received %d bytes", self.name, n)
 
 	message_info, err := self.manager.Decrypt(encrypted.Bytes())
 	if err != nil {
@@ -657,11 +725,18 @@ func (self *NotificationReader) maybeCallOnExit() {
 // 3. Any received messages will be processed automatically by
 //    self.sendMessageList()
 // 4. If there are errors, we back off and wait for self.maxPoll.
-func (self *NotificationReader) Start(ctx context.Context) {
+func (self *NotificationReader) Start(
+	ctx context.Context, wg *sync.WaitGroup) {
+
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		defer self.maybeCallOnExit()
 
+		// Periodically read from executor and push to ring buffer.
 		for {
+			executor.Nanny.UpdateReadFromServer()
+
 			// The Reader does not send any server bound
 			// messages - it is blocked reading server
 			// responses.
@@ -679,6 +754,7 @@ func (self *NotificationReader) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 
+				// Reconnect quickly for low latency.
 			case <-self.clock.After(self.minPoll):
 				continue
 			}
@@ -696,7 +772,6 @@ func (self *NotificationReader) GetMessageList() *crypto_proto.MessageList {
 			SessionId: constants.FOREMAN_WELL_KNOWN_FLOW,
 			ForemanCheckin: &actions_proto.ForemanCheckin{
 				LastEventTableVersion: actions.GlobalEventTableVersion(),
-				LastHuntTimestamp:     self.config_obj.Writeback.HuntLastTimestamp,
 			}},
 		},
 	}
@@ -730,16 +805,19 @@ func (self *HTTPCommunicator) SetPause(is_paused bool) {
 }
 
 // Run forever.
-func (self *HTTPCommunicator) Run(ctx context.Context) {
+func (self *HTTPCommunicator) Run(
+	ctx context.Context, wg *sync.WaitGroup) {
 	self.logger.Info("Starting HTTPCommunicator: %v", self.receiver.connector)
+	defer wg.Done()
 
-	self.receiver.Start(ctx)
-	self.sender.Start(ctx)
+	self.receiver.Start(ctx, wg)
+	self.sender.Start(ctx, wg)
 
 	<-ctx.Done()
 }
 
 func NewHTTPCommunicator(
+	ctx context.Context,
 	config_obj *config_proto.Config,
 	manager crypto.IClientCryptoManager,
 	executor executor.Executor,
@@ -760,7 +838,7 @@ func NewHTTPCommunicator(
 		return nil, err
 	}
 
-	rb := NewLocalBuffer(config_obj)
+	rb := NewLocalBuffer(ctx, config_obj)
 
 	// Truncate the file to ensure we always start with a clean
 	// slate. This avoids a situation where the client fills up

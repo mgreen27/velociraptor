@@ -17,16 +17,18 @@ parameters:
    type: regex
 
 sources:
- - queries:
-      - |
+ - query: |
         LET UserProfiles = Select Name as Username,
             {
-                SELECT FullPath FROM glob(globs=expand(path=Directory) + "//NTUSER.DAT", accessor="file")
+                SELECT FullPath FROM glob(
+                  root=expand(path=Directory),
+                  globs="/NTUSER.DAT",
+                  accessor="auto")
             } as NTUser,
             expand(path=Directory) as Directory
         FROM Artifact.Windows.Sys.Users()
         WHERE Directory and NTUser and Name =~ userRegex
-      - |
+
         SELECT * FROM foreach(
           row={
             SELECT Username,NTUser FROM UserProfiles
@@ -35,12 +37,12 @@ sources:
             SELECT Name as Document,
               Username,
               NTUser as Userhive,
-              dirname(path=url(parse=FullPath).fragment) as Key,
+              OSPath.Dirname AS Key,
               Mtime AS LastModified
             FROM glob(
-              globs=url(scheme="file",
-                path=NTUser,
-                fragment=KeyGlob).String,
+              globs=KeyGlob,
+              root=pathspec(DelegatePath=NTUser),
               accessor="raw_reg")
-            WHERE Data.type = "REG_BINARY" and encode(string=Data.value, type="hex") =~ "ffffff7f$"
+            WHERE Data.type =~ "BINARY"
+              and encode(string=Data.value, type="hex") =~ "ffffff7f$"
           })

@@ -473,7 +473,8 @@ class NewCollectionResources extends React.Component {
 
     isInvalid = () => {
         return this.state.invalid_1 || this.state.invalid_2 ||
-            this.state.invalid_3 || this.state.invalid_4;
+            this.state.invalid_3 || this.state.invalid_4 ||
+            this.state.invalid_5;
     }
 
     getTimeout = (artifacts) => {
@@ -553,6 +554,44 @@ class NewCollectionResources extends React.Component {
         return ops_per_second + " per second";
     }
 
+    getCpuLimit = (artifacts) => {
+        let cpu_limit = 0;
+        _.each(artifacts, (definition) => {
+            let def_cpu_limit = definition.resources &&
+                definition.resources.cpu_limit;
+            def_cpu_limit = def_cpu_limit || 0;
+
+            if (def_cpu_limit > cpu_limit) {
+                cpu_limit = def_cpu_limit;
+            }
+        });
+
+        if (cpu_limit === 0) {
+            cpu_limit = "100";
+        }
+
+        return cpu_limit + "%";
+    }
+
+    getIopsLimit = (artifacts) => {
+        let iops_limit = 0;
+        _.each(artifacts, (definition) => {
+            let def_iops_limit = definition.resources &&
+                definition.resources.iops_limit;
+            def_iops_limit = def_iops_limit || 0;
+
+            if (def_iops_limit > iops_limit) {
+                iops_limit = def_iops_limit;
+            }
+        });
+
+        if (iops_limit === 0) {
+            iops_limit = "unlimited";
+        }
+
+        return iops_limit + " per second";
+    }
+
     render() {
         let resources = this.props.resources || {};
         return (
@@ -563,13 +602,29 @@ class NewCollectionResources extends React.Component {
               <Modal.Body>
                 <Form>
                   <Form.Group as={Row}>
-                    <Form.Label column sm="3">Ops/Sec</Form.Label>
+                    <Form.Label column sm="3">CPU Limit Percent</Form.Label>
                     <Col sm="8">
                       <ValidatedInteger
-                        placeholder={this.getOpsPerSecond(this.props.artifacts)}
-                        value={resources.ops_per_second}
+                        placeholder={this.getCpuLimit(this.props.artifacts)}
+                        value={resources.cpu_limit}
+                        valid_func={value=>value >= 0 && value <=100}
+                        setInvalid={value => this.setState({
+                            invalid_1: value})}
+                        setValue={value => this.props.setResources({
+                            cpu_limit: value
+                        })} />
+                    </Col>
+                  </Form.Group>
+                  <Form.Group as={Row}>
+                    <Form.Label column sm="3">IOps/Sec</Form.Label>
+                    <Col sm="8">
+                      <ValidatedInteger
+                        placeholder={this.getIopsLimit(this.props.artifacts)}
+                        value={resources.iops_limit}
                         setInvalid={value => this.setState({invalid_1: value})}
-                        setValue={value => this.props.setResources({ops_per_second: value})} />
+                        setValue={value => this.props.setResources({
+                            iops_limit: value
+                      })} />
                     </Col>
                   </Form.Group>
 
@@ -585,12 +640,24 @@ class NewCollectionResources extends React.Component {
                   </Form.Group>
 
                   <Form.Group as={Row}>
+                    <Form.Label column sm="3">Max Idle Time in Seconds</Form.Label>
+                    <Col sm="8">
+                      <ValidatedInteger
+                        placeholder="If set collection will be terminated after this many seconds with no progress."
+                        value={resources.progress_timeout}
+                        setInvalid={value => this.setState({invalid_3: value})}
+                        setValue={value => this.props.setResources({
+                            progress_timeout: value})} />
+                    </Col>
+                  </Form.Group>
+
+                  <Form.Group as={Row}>
                     <Form.Label column sm="3">Max Rows</Form.Label>
                     <Col sm="8">
                       <ValidatedInteger
                         placeholder={this.getMaxRows(this.props.artifacts)}
                         value={resources.max_rows}
-                        setInvalid={value => this.setState({invalid_3: value})}
+                        setInvalid={value => this.setState({invalid_4: value})}
                         setValue={value => this.props.setResources({max_rows: value})} />
                     </Col>
                   </Form.Group>
@@ -601,7 +668,7 @@ class NewCollectionResources extends React.Component {
                       <ValidatedInteger
                         placeholder={this.getMaxUploadBytes(this.props.artifacts)}
                         value={resources.max_mbytes}
-                        setInvalid={value => this.setState({invalid_4: value})}
+                        setInvalid={value => this.setState({invalid_5: value})}
                         setValue={value => this.props.setResources({max_mbytes: value})} />
                     </Col>
                   </Form.Group>
@@ -804,6 +871,8 @@ class NewCollectionWizard extends React.Component {
 
         let resources = {
             ops_per_second: request.ops_per_second,
+            cpu_limit: request.cpu_limit,
+            iops_limit: request.iops_limit,
             timeout: request.timeout,
             max_rows: request.max_rows,
             max_mbytes: Math.round(
@@ -883,6 +952,14 @@ class NewCollectionWizard extends React.Component {
 
         if (this.state.resources.ops_per_second) {
             result.ops_per_second = this.state.resources.ops_per_second;
+        }
+
+        if (this.state.resources.cpu_limit) {
+            result.cpu_limit = this.state.resources.cpu_limit;
+        }
+
+        if (this.state.resources.iops_limit) {
+            result.iops_limit = this.state.resources.iops_limit;
         }
 
         if (this.state.resources.timeout) {

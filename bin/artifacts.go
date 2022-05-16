@@ -18,20 +18,23 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Velocidex/ordereddict"
 	"github.com/Velocidex/yaml/v2"
-	kingpin "gopkg.in/alecthomas/kingpin.v2"
 	"www.velocidex.com/golang/velociraptor/config"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
+	"www.velocidex.com/golang/velociraptor/executor"
 	flows_proto "www.velocidex.com/golang/velociraptor/flows/proto"
 	logging "www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/services"
+	"www.velocidex.com/golang/velociraptor/startup"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
 )
 
@@ -64,6 +67,18 @@ var (
 			"store all output in it.").
 		Default("").String()
 
+	artifact_command_collect_timeout = artifact_command_collect.Flag(
+		"timeout", "Time collection out after this many seconds.").
+		Default("0").Float64()
+
+	artifact_command_collect_progress_timeout = artifact_command_collect.Flag(
+		"progress_timeout", "If specified we terminate the colleciton if no progress is made in this many seconds.").
+		Default("0").Float64()
+
+	artifact_command_collect_cpu_limit = artifact_command_collect.Flag(
+		"cpu_limit", "A number between 0 to 100 representing maximum CPU utilization.").
+		Default("0").Int64()
+
 	artifact_command_collect_output_compression = artifact_command_collect.Flag(
 		"output_level", "Compression level for zip output.").
 		Default("5").Int64()
@@ -93,6 +108,9 @@ var (
 
 	artifact_command_collect_args = artifact_command_collect.Flag(
 		"args", "Artifact args.").Strings()
+
+	artifact_command_collect_hardmemory = artifact_command_collect.Flag(
+		"hard_memory_limit", "If we reach this memory limit in bytes we exit.").Uint64()
 )
 
 func listArtifactsHint() []string {
@@ -109,16 +127,22 @@ func listArtifactsHint() []string {
 
 func getRepository(config_obj *config_proto.Config) (services.Repository, error) {
 	manager, err := services.GetRepositoryManager()
-	kingpin.FatalIfError(err, "Artifact GetGlobalRepository ")
+	if err != nil {
+		return nil, err
+	}
 
 	repository, err := manager.GetGlobalRepository(config_obj)
-	kingpin.FatalIfError(err, "Artifact GetGlobalRepository ")
+	if err != nil {
+		return nil, err
+	}
 
+	// Artifacts specified with the --definitions flag take priority
+	// and can override built in artifacts
 	if *artifact_definitions_dir != "" {
 		logging.GetLogger(config_obj, &logging.ToolComponent).
-			Info("Loading artifacts from %s",
-				*artifact_definitions_dir)
-		_, err := repository.LoadDirectory(config_obj, *artifact_definitions_dir)
+			Info("Loading artifacts from %s", *artifact_definitions_dir)
+		_, err := repository.LoadDirectory(
+			config_obj, *artifact_definitions_dir, true /* override_builtins */)
 		if err != nil {
 			logging.GetLogger(config_obj, &logging.ToolComponent).
 				Error("Artifact LoadDirectory: %v ", err)
@@ -129,15 +153,38 @@ func getRepository(config_obj *config_proto.Config) (services.Repository, error)
 	return repository, nil
 }
 
-func doArtifactCollect() {
-	checkAdmin()
+func doArtifactCollect() error {
+	err := checkAdmin()
+	if err != nil {
+		return err
+	}
 
-	config_obj, err := makeDefaultConfigLoader().WithNullLoader().LoadAndValidate()
-	kingpin.FatalIfError(err, "Load Config ")
+	config_obj, err := makeDefaultConfigLoader().
+		WithNullLoader().LoadAndValidate()
+	if err != nil {
+		return fmt.Errorf("Unable to create config: %w", err)
+	}
 
-	sm, err := startEssentialServices(config_obj)
-	kingpin.FatalIfError(err, "Load Config ")
+	top_ctx, top_cancel := install_sig_handler()
+	defer top_cancel()
+
+	ctx, cancel := context.WithCancel(top_ctx)
+	defer cancel()
+
+	sm := services.NewServiceManager(ctx, config_obj)
 	defer sm.Close()
+
+	err = startup.StartupEssentialServices(sm)
+	if err != nil {
+		return err
+	}
+
+	// Load any artifacts defined in the config file after all the
+	// services are up.
+	err = load_config_artifacts(config_obj)
+	if err != nil {
+		return err
+	}
 
 	spec := ordereddict.NewDict()
 	for _, name := range *artifact_command_collect_names {
@@ -168,12 +215,16 @@ func doArtifactCollect() {
 	}
 
 	manager, err := services.GetRepositoryManager()
-	kingpin.FatalIfError(err, "GetRepositoryManager")
+	if err != nil {
+		return err
+	}
+
+	logger := log.New(&LogWriter{config_obj}, " ", 0)
 
 	scope := manager.BuildScope(services.ScopeBuilder{
 		Config:     config_obj,
 		ACLManager: vql_subsystem.NullACLManager{},
-		Logger:     log.New(&LogWriter{config_obj}, " ", 0),
+		Logger:     logger,
 		Env: ordereddict.NewDict().
 			Set("Artifacts", *artifact_command_collect_names).
 			Set("Output", *artifact_command_collect_output).
@@ -182,12 +233,39 @@ func doArtifactCollect() {
 			Set("Report", *artifact_command_collect_report).
 			Set("Template", *artifact_command_collect_report_template).
 			Set("Args", spec).
-			Set("Format", *artifact_command_collect_format),
+			Set("Format", *artifact_command_collect_format).
+			Set("Timeout", *artifact_command_collect_timeout).
+			Set("ProgressTimeout", *artifact_command_collect_progress_timeout).
+			Set("CpuLimit", *artifact_command_collect_cpu_limit),
 	})
 	defer scope.Close()
 
+	// Stick around until the query completes so it gets a chance to
+	// close the collection zip.
+	sm.Wg.Add(1)
+	scope.AddDestructor(func() {
+		sm.Wg.Done()
+	})
+
+	if *artifact_command_collect_hardmemory > 0 {
+		scope.Log("Installing hard memory limit of %v bytes",
+			*artifact_command_collect_hardmemory)
+		Nanny := &executor.NannyService{
+			MaxMemoryHardLimit: *artifact_command_collect_hardmemory,
+			Logger: logging.GetLogger(
+				config_obj, &logging.ToolComponent),
+			OnExit: cancel,
+		}
+
+		// Keep the nanny running after the query is done so it can
+		// hard kill the process if cancellation is not enough.
+		Nanny.Start(top_ctx, &sync.WaitGroup{})
+	}
+
 	_, err = getRepository(config_obj)
-	kingpin.FatalIfError(err, "Loading extra artifacts")
+	if err != nil {
+		return err
+	}
 
 	now := time.Now()
 	defer func() {
@@ -205,8 +283,12 @@ func doArtifactCollect() {
 	query := `
   SELECT * FROM collect(artifacts=Artifacts, output=Output, report=Report,
                         level=Level, template=Template,
+                        timeout=Timeout, progress_timeout=ProgressTimeout,
+                        cpu_limit=CpuLimit,
                         password=Password, args=Args, format=Format)`
-	eval_local_query(config_obj, *artifact_command_collect_format, query, scope)
+	return eval_local_query(
+		ctx, config_obj,
+		*artifact_command_collect_format, query, scope)
 }
 
 func getFilterRegEx(pattern string) (*regexp.Regexp, error) {
@@ -215,45 +297,61 @@ func getFilterRegEx(pattern string) (*regexp.Regexp, error) {
 	return regexp.Compile(pattern)
 }
 
-func doArtifactShow() {
-	config_obj, err := makeDefaultConfigLoader().WithNullLoader().LoadAndValidate()
-	kingpin.FatalIfError(err, "Load Config ")
+func doArtifactShow() error {
+	config_obj, err := makeDefaultConfigLoader().
+		WithNullLoader().LoadAndValidate()
+	if err != nil {
+		return fmt.Errorf("Unable to create config: %w", err)
+	}
 
 	sm, err := startEssentialServices(config_obj)
-	kingpin.FatalIfError(err, "Starting services.")
+	if err != nil {
+		return fmt.Errorf("Can't load service: %w", err)
+	}
 	defer sm.Close()
 
-	kingpin.FatalIfError(err, "Load Config ")
 	repository, err := getRepository(config_obj)
-	kingpin.FatalIfError(err, "Loading extra artifacts")
+	if err != nil {
+		return fmt.Errorf("Loading extra artifacts: %w", err)
+	}
 
 	artifact, pres := repository.Get(config_obj, *artifact_command_show_name)
 	if !pres {
-		kingpin.Fatalf("Artifact %s not found",
+		return fmt.Errorf("Artifact %s not found",
 			*artifact_command_show_name)
 	}
 
 	fmt.Println(artifact.Raw)
+	return nil
 }
 
-func doArtifactList() {
-	config_obj, err := makeDefaultConfigLoader().WithNullLoader().LoadAndValidate()
-	kingpin.FatalIfError(err, "Load Config ")
+func doArtifactList() error {
+	config_obj, err := makeDefaultConfigLoader().
+		WithNullLoader().LoadAndValidate()
+	if err != nil {
+		return fmt.Errorf("Unable to load config file: %w", err)
+	}
 
 	sm, err := startEssentialServices(config_obj)
-	kingpin.FatalIfError(err, "Starting services.")
+	if err != nil {
+		return fmt.Errorf("Starting services: %w", err)
+	}
 	defer sm.Close()
 
 	ctx, cancel := install_sig_handler()
 	defer cancel()
 
 	repository, err := getRepository(config_obj)
-	kingpin.FatalIfError(err, "Loading extra artifacts")
+	if err != nil {
+		return err
+	}
 
 	var name_regex *regexp.Regexp
 	if *artifact_command_list_name != "" {
 		re, err := getFilterRegEx(*artifact_command_list_name)
-		kingpin.FatalIfError(err, "Artifact name regex not valid")
+		if err != nil {
+			return fmt.Errorf("Artifact name regex not valid: %w", err)
+		}
 
 		name_regex = re
 	}
@@ -271,7 +369,7 @@ func doArtifactList() {
 
 		artifact, pres := repository.Get(config_obj, name)
 		if !pres {
-			kingpin.Fatalf("Artifact %s not found", name)
+			return fmt.Errorf("Artifact %s not found", name)
 		}
 
 		fmt.Println(artifact.Raw)
@@ -281,7 +379,9 @@ func doArtifactList() {
 		}
 
 		launcher, err := services.GetLauncher()
-		kingpin.FatalIfError(err, "GetLauncher")
+		if err != nil {
+			return err
+		}
 
 		request, err := launcher.CompileCollectorArgs(
 			ctx, config_obj, vql_subsystem.NullACLManager{}, repository,
@@ -291,14 +391,19 @@ func doArtifactList() {
 			&flows_proto.ArtifactCollectorArgs{
 				Artifacts: []string{artifact.Name},
 			})
-		kingpin.FatalIfError(err, "Unable to compile artifact.")
+		if err != nil {
+			return fmt.Errorf("Unable to compile artifact: %w", err)
+		}
 
 		res, err := yaml.Marshal(request)
-		kingpin.FatalIfError(err, "Unable to encode artifact.")
+		if err != nil {
+			return fmt.Errorf("Unable to encode artifact: %w", err)
+		}
 
 		fmt.Printf("VQLCollectorArgs %s:\n***********\n%v\n",
 			artifact.Name, string(res))
 	}
+	return nil
 }
 
 // Load any artifacts defined inside the config file.
@@ -307,7 +412,12 @@ func load_config_artifacts(config_obj *config_proto.Config) error {
 		return nil
 	}
 
-	repository, err := getRepository(config_obj)
+	manager, err := services.GetRepositoryManager()
+	if err != nil {
+		return err
+	}
+
+	repository, err := manager.GetGlobalRepository(config_obj)
 	if err != nil {
 		return err
 	}
@@ -318,10 +428,16 @@ func load_config_artifacts(config_obj *config_proto.Config) error {
 			return err
 		}
 
-		_, err = repository.LoadYaml(string(serialized), true /* validate */)
+		// Config artifacts are considered built in.
+		artifact, err := repository.LoadYaml(
+			string(serialized), true /* validate */, true /* built_in */)
 		if err != nil {
+			logging.Prelog("<red>Error Loading config artifact %v</>: %v",
+				artifact.Name, err)
 			return err
 		}
+		logging.Prelog("Loading config artifact: %v", artifact.Name)
+
 	}
 	return nil
 }
@@ -330,13 +446,13 @@ func init() {
 	command_handlers = append(command_handlers, func(command string) bool {
 		switch command {
 		case artifact_command_list.FullCommand():
-			doArtifactList()
+			FatalIfError(artifact_command_list, doArtifactList)
 
 		case artifact_command_show.FullCommand():
-			doArtifactShow()
+			FatalIfError(artifact_command_show, doArtifactShow)
 
 		case artifact_command_collect.FullCommand():
-			doArtifactCollect()
+			FatalIfError(artifact_command_collect, doArtifactCollect)
 
 		default:
 			return false

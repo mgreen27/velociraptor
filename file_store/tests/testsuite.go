@@ -142,7 +142,7 @@ func (self *FileStoreTestSuite) TestListChildrenWithTypes() {
 
 		// Now check walk
 		path_specs := []api.FSPathSpec{}
-		err = self.filestore.Walk(filename, func(
+		err = api.Walk(self.filestore, filename, func(
 			path api.FSPathSpec, info os.FileInfo) error {
 			// Ignore directories as they are not important.
 			if !info.IsDir() {
@@ -185,7 +185,7 @@ func (self *FileStoreTestSuite) TestListDirectory() {
 	assert.Equal(self.T(), names, []string{"Bar", "Bar.txt", "Foo.txt"})
 
 	names = nil
-	err = self.filestore.Walk(filename, func(
+	err = api.Walk(self.filestore, filename, func(
 		path api.FSPathSpec, info os.FileInfo) error {
 		names = append(names, path.AsClientPath())
 		return nil
@@ -201,7 +201,7 @@ func (self *FileStoreTestSuite) TestListDirectory() {
 
 	// Walk non existent directory just returns no results.
 	names = nil
-	err = self.filestore.Walk(filename.AddChild("nonexistant"),
+	err = api.Walk(self.filestore, filename.AddChild("nonexistant"),
 		func(path api.FSPathSpec, info os.FileInfo) error {
 			names = append(names, path.AsFilestoreFilename(
 				self.config_obj))
@@ -348,7 +348,7 @@ func (self *QueueManagerTestSuite) TestPush() {
 		ordereddict.NewDict().Set("foo", 2)}
 
 	ctx := context.Background()
-	output, cancel := self.manager.Watch(ctx, artifact_name)
+	output, cancel := self.manager.Watch(ctx, artifact_name, nil)
 	defer cancel()
 
 	log_path := path_specs.NewUnsafeFilestorePath("log_path")

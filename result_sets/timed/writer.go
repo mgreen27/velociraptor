@@ -12,9 +12,9 @@ import (
 	"errors"
 	"time"
 
-	"github.com/Velocidex/json"
 	"github.com/Velocidex/ordereddict"
 	"www.velocidex.com/golang/velociraptor/file_store/api"
+	"www.velocidex.com/golang/velociraptor/json"
 	"www.velocidex.com/golang/velociraptor/paths"
 	"www.velocidex.com/golang/velociraptor/result_sets"
 	"www.velocidex.com/golang/velociraptor/timelines"
@@ -26,8 +26,9 @@ var (
 )
 
 type rowContainer struct {
-	ts  time.Time
-	row *ordereddict.Dict
+	ts         time.Time
+	serialized []byte
+	count      int
 }
 
 type TimedResultSetWriterImpl struct {
@@ -42,14 +43,36 @@ type TimedResultSetWriterImpl struct {
 	log_path      api.FSPathSpec
 	last_log_base string
 	writer        *timelines.TimelineWriter
+	completer     *utils.Completer
 
 	Clock utils.Clock
 }
 
 func (self *TimedResultSetWriterImpl) Write(row *ordereddict.Dict) {
+	// Encode each row ASAP but then store the raw json for combined
+	// writes. This allows us to get rid of memory from the query
+	// ASAP.
+	serialized, err := json.MarshalWithOptions(row, self.opts)
+	if err != nil {
+		return
+	}
+
 	self.rows = append(self.rows, rowContainer{
-		row: row,
-		ts:  self.Clock.Now(),
+		serialized: serialized,
+		count:      1,
+		ts:         self.Clock.Now(),
+	})
+
+	if len(self.rows) > 10000 {
+		self.Flush()
+	}
+}
+
+func (self *TimedResultSetWriterImpl) WriteJSONL(jsonl []byte, count int) {
+	self.rows = append(self.rows, rowContainer{
+		serialized: jsonl,
+		count:      count,
+		ts:         self.Clock.Now(),
 	})
 
 	if len(self.rows) > 10000 {
@@ -68,7 +91,7 @@ func (self *TimedResultSetWriterImpl) Flush() {
 	for _, row := range self.rows {
 		writer, err := self.getWriter(row.ts)
 		if err == nil {
-			writer.Write(row.ts, row.row)
+			writer.WriteBuffer(row.ts, row.serialized)
 		}
 	}
 
@@ -96,7 +119,9 @@ func (self *TimedResultSetWriterImpl) getWriter(ts time.Time) (
 	writer, err := timelines.NewTimelineWriter(
 		self.file_store_factory,
 		paths.NewTimelinePathManager(
-			log_path.Base(), log_path), false /* truncate */)
+			log_path.Base(), log_path),
+		self.completer.GetCompletionFunc(),
+		result_sets.AppendMode)
 	if err != nil {
 		return nil, err
 	}
@@ -125,13 +150,18 @@ func (self *TimedResultSetWriterImpl) Close() {
 func NewTimedResultSetWriter(
 	file_store_factory api.FileStore,
 	path_manager api.PathManager,
-	opts *json.EncOpts) (result_sets.TimedResultSetWriter, error) {
+	opts *json.EncOpts,
+	completion func()) (result_sets.TimedResultSetWriter, error) {
 
 	return &TimedResultSetWriterImpl{
 		file_store_factory: file_store_factory,
 		path_manager:       path_manager,
 		opts:               opts,
-		Clock:              utils.RealClock{},
+
+		// Only call the completion function once all writes
+		// completed.
+		completer: utils.NewCompleter(completion),
+		Clock:     utils.RealClock{},
 	}, nil
 }
 
@@ -139,11 +169,13 @@ func NewTimedResultSetWriterWithClock(
 	file_store_factory api.FileStore,
 	path_manager api.PathManager,
 	opts *json.EncOpts,
+	completion func(),
 	clock utils.Clock) (result_sets.TimedResultSetWriter, error) {
 
 	return &TimedResultSetWriterImpl{
 		file_store_factory: file_store_factory,
 		path_manager:       path_manager,
+		completer:          utils.NewCompleter(completion),
 		opts:               opts,
 		Clock:              clock,
 	}, nil

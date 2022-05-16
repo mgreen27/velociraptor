@@ -12,8 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"golang.org/x/net/context"
-	"www.velocidex.com/golang/velociraptor/file_store/api"
-	"www.velocidex.com/golang/velociraptor/glob"
+	"www.velocidex.com/golang/velociraptor/accessors"
+	"www.velocidex.com/golang/velociraptor/uploads"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
 	"www.velocidex.com/golang/velociraptor/vql/networking"
 	"www.velocidex.com/golang/vfilter"
@@ -52,7 +52,7 @@ func (self *S3UploadFunction) Call(ctx context.Context,
 		return vfilter.Null{}
 	}
 
-	accessor, err := glob.GetAccessor(arg.Accessor, scope)
+	accessor, err := accessors.GetAccessor(arg.Accessor, scope)
 	if err != nil {
 		scope.Log("upload_S3: %v", err)
 		return vfilter.Null{}
@@ -70,7 +70,7 @@ func (self *S3UploadFunction) Call(ctx context.Context,
 		arg.Name = arg.File
 	}
 
-	stat, err := file.Stat()
+	stat, err := accessor.Lstat(arg.File)
 	if err != nil {
 		scope.Log("upload_S3: Unable to stat %s: %v",
 			arg.File, err)
@@ -88,7 +88,8 @@ func (self *S3UploadFunction) Call(ctx context.Context,
 			arg.Region,
 			arg.Endpoint,
 			arg.ServerSideEncryption,
-			arg.NoVerifyCert)
+			arg.NoVerifyCert,
+			uint64(stat.Size()))
 		if err != nil {
 			scope.Log("upload_S3: %v", err)
 			// Relay the error in the UploadResponse
@@ -101,15 +102,16 @@ func (self *S3UploadFunction) Call(ctx context.Context,
 }
 
 func upload_S3(ctx context.Context, scope vfilter.Scope,
-	reader glob.ReadSeekCloser,
+	reader accessors.ReadSeekCloser,
 	bucket, name string,
 	credentialsKey string,
 	credentialsSecret string,
 	region string,
 	endpoint string,
 	serverSideEncryption string,
-	NoVerifyCert bool) (
-	*api.UploadResponse, error) {
+	NoVerifyCert bool,
+	size uint64) (
+	*uploads.UploadResponse, error) {
 
 	scope.Log("upload_S3: Uploading %v to %v", name, bucket)
 
@@ -119,7 +121,7 @@ func upload_S3(ctx context.Context, scope vfilter.Scope,
 		creds := credentials.NewStaticCredentials(credentialsKey, credentialsSecret, token)
 		_, err := creds.Get()
 		if err != nil {
-			return &api.UploadResponse{
+			return &uploads.UploadResponse{
 				Error: err.Error(),
 			}, err
 		}
@@ -143,7 +145,7 @@ func upload_S3(ctx context.Context, scope vfilter.Scope,
 	}
 	sess, err := session.NewSession(conf)
 	if err != nil {
-		return &api.UploadResponse{
+		return &uploads.UploadResponse{
 			Error: err.Error(),
 		}, err
 	}
@@ -167,21 +169,17 @@ func upload_S3(ctx context.Context, scope vfilter.Scope,
 			})
 	}
 	if err != nil {
-		return &api.UploadResponse{
+		return &uploads.UploadResponse{
 			Error: err.Error(),
 		}, err
 	}
 
 	// All good! report the outcome.
-	response := &api.UploadResponse{
+	response := &uploads.UploadResponse{
 		Path: result.Location,
 	}
 
-	stat, err := reader.Stat()
-	if err == nil {
-		response.Size = uint64(stat.Size())
-	}
-
+	response.Size = size
 	return response, nil
 }
 

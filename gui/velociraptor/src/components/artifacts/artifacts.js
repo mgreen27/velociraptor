@@ -2,7 +2,7 @@ import './artifacts.css';
 import React from 'react';
 import PropTypes from 'prop-types';
 import api from '../core/api-service.js';
-
+import classNames from "classnames";
 import VeloReportViewer from "../artifacts/reporting.js";
 
 import _ from 'lodash';
@@ -53,11 +53,12 @@ class DeleteOKDialog extends React.Component {
 
 class ArtifactInspector extends React.Component {
     static propTypes = {
-
+        client: PropTypes.object,
     };
 
     state = {
         selectedDescriptor: undefined,
+        fullSelectedDescriptor: {},
 
         // A list of descriptors that match the search term.
         matchingDescriptors: [],
@@ -107,7 +108,8 @@ class ArtifactInspector extends React.Component {
         api.post("v1/GetArtifacts",
                 {
                     search_term: search_term || "...",
-                    // This might be too many to fetch at once but we are still fast enough for now.
+                    // This might be too many to fetch at once but we
+                    // are still fast enough for now.
                     fields: {
                         name: true,
                     },
@@ -132,11 +134,70 @@ class ArtifactInspector extends React.Component {
     }
 
     onSelect = (row, e) => {
-        this.setState({selectedDescriptor: row});
+        this.setState({
+            selectedDescriptor: row,
+            fullSelectedDescriptor: {},
+        });
         this.props.history.push("/artifacts/" + row.name);
         e.preventDefault();
         e.stopPropagation();
+
+        // Fetch the full description
+        api.post("v1/GetArtifacts", {
+            names: [row.name],
+        }, this.source.token).then(response=>{
+            let items = response.data.items;
+            if (items.length > 0) {
+                this.setState({fullSelectedDescriptor: items[0]});
+            };
+        });
         return false;
+    }
+
+    huntArtifactEnabled = ()=>{
+        if (!this.state.selectedDescriptor) {
+            return false;
+        }
+
+        if (this.state.fullSelectedDescriptor.type !== "client") {
+            return false;
+        }
+        return true;
+    }
+
+    huntArtifact = () => {
+        this.props.history.push("/hunts/new/" + this.state.selectedDescriptor.name);
+    }
+
+    collectArtifactEnabled = ()=>{
+        if (!this.state.selectedDescriptor) {
+            return false;
+        }
+
+        let type = this.state.fullSelectedDescriptor.type;
+        if (type !== "client" && type !== "server") {
+            return false;
+        }
+
+        // If a client is not selected we can not pivot to it.
+        if (type === "client") {
+            if (!this.props.client || !this.props.client.client_id) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+    collectArtifact = ()=>{
+        let client_id = this.props.client && this.props.client.client_id;
+        let name = this.state.selectedDescriptor.name;
+        let type = this.state.fullSelectedDescriptor.type;
+
+        if (type === "server") {
+            client_id = "server";
+        }
+
+        this.props.history.push("/collected/" + client_id + "/new/" + name);
     }
 
     deleteArtifact = (selected) => {
@@ -151,7 +212,8 @@ class ArtifactInspector extends React.Component {
 
     render() {
         let selected = this.state.selectedDescriptor && this.state.selectedDescriptor.name;
-        let deletable = selected && selected.match(/^Custom/);
+        let deletable = this.state.selectedDescriptor &&
+            !this.state.selectedDescriptor.built_in;
 
         return (
             <div className="full-width-height">
@@ -219,6 +281,20 @@ class ArtifactInspector extends React.Component {
                     <FontAwesomeIcon icon="trash"/>
                   </Button>
 
+                  <Button title="Hunt Artifact"
+                          onClick={this.huntArtifact}
+                          disabled={!this.huntArtifactEnabled()}
+                          variant="default">
+                    <FontAwesomeIcon icon="crosshairs"/>
+                  </Button>
+
+                  <Button title="Collect Artifact"
+                          onClick={this.collectArtifact}
+                          disabled={!this.collectArtifactEnabled()}
+                          variant="default">
+                    <FontAwesomeIcon icon="cloud-download-alt"/>
+                  </Button>
+
                   <Button title="Upload Artifact Pack"
                           onClick={()=>this.setState({showArtifactsUploadDialog: true})}
                           variant="default">
@@ -273,6 +349,11 @@ class ArtifactInspector extends React.Component {
                                           onClick={(e) => this.onSelect(item, e)}>
                                          {item.name}
                                        </a>
+                                       <span className="user-edit">
+                                         <FontAwesomeIcon
+                                           className={classNames({"invisible": item.built_in})}
+                                           icon="user-edit" />
+                                       </span>
                                      </td>
                                    </tr>;
                         })}

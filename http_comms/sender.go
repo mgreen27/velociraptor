@@ -29,9 +29,10 @@ import (
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
+	"time"
 
-	"github.com/golang/protobuf/proto"
 	errors "github.com/pkg/errors"
+	"google.golang.org/protobuf/proto"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/crypto"
 	crypto_proto "www.velocidex.com/golang/velociraptor/crypto/proto"
@@ -57,9 +58,20 @@ type Sender struct {
 	clock utils.Clock
 }
 
+func (self *Sender) CleanOnExit(ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	<-ctx.Done()
+	self.urgent_buffer.Close()
+	self.ring_buffer.Close()
+}
+
 // Persistent loop to pump messages from the executor to the ring
 // buffer. This function should never exit in a real client.
-func (self *Sender) PumpExecutorToRingBuffer(ctx context.Context) {
+func (self *Sender) PumpExecutorToRingBuffer(
+	ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+
 	// We should never exit from this.
 	defer self.maybeCallOnExit()
 
@@ -69,13 +81,24 @@ func (self *Sender) PumpExecutorToRingBuffer(ctx context.Context) {
 
 	for {
 		if atomic.LoadInt32(&self.IsPaused) != 0 {
-			self.clock.Sleep(self.minPoll)
-			continue
+			select {
+			case <-ctx.Done():
+				return
+			case <-self.clock.After(self.minPoll):
+				continue
+			}
 		}
+
+		executor.Nanny.UpdatePumpToRb()
 
 		select {
 		case <-ctx.Done():
 			return
+
+			// Keep the nanny alive to ensure we are still inside this
+			// loop.
+		case <-time.After(self.maxPoll):
+			continue
 
 		case msg, ok := <-executor_chan:
 			// Executor closed the channel.
@@ -149,11 +172,16 @@ func (self *Sender) PumpExecutorToRingBuffer(ctx context.Context) {
 // to send. This also manages timing and retransmissions - blocks if
 // the server is not available. This function should never exit in a
 // real client.
-func (self *Sender) PumpRingBufferToSendMessage(ctx context.Context) {
+func (self *Sender) PumpRingBufferToSendMessage(
+	ctx context.Context, wg *sync.WaitGroup) {
+	defer wg.Done()
+
 	// We should never exit from this.
 	defer self.maybeCallOnExit()
 
 	for {
+		executor.Nanny.UpdatePumpRbToServer()
+
 		if atomic.LoadInt32(&self.IsPaused) == 0 {
 			// Grab some messages from the urgent ring buffer.
 			compressed_messages := LeaseAndCompress(self.urgent_buffer,
@@ -174,8 +202,7 @@ func (self *Sender) PumpRingBufferToSendMessage(ctx context.Context) {
 				// know the messages are sent so we
 				// can commit them from the ring
 				// buffer.
-				self.sendMessageList(ctx, compressed_messages,
-					false /* urgent */)
+				self.sendMessageList(ctx, compressed_messages, false /* urgent */)
 				self.ring_buffer.Commit()
 
 				// We need to make sure our memory
@@ -211,9 +238,17 @@ func (self *Sender) PumpRingBufferToSendMessage(ctx context.Context) {
 
 // The sender simply sends any server bound messages to the server. We
 // only send messages when responses are pending.
-func (self *Sender) Start(ctx context.Context) {
-	go self.PumpExecutorToRingBuffer(ctx)
-	go self.PumpRingBufferToSendMessage(ctx)
+func (self *Sender) Start(
+	ctx context.Context, wg *sync.WaitGroup) {
+
+	wg.Add(1)
+	go self.PumpExecutorToRingBuffer(ctx, wg)
+
+	wg.Add(1)
+	go self.PumpRingBufferToSendMessage(ctx, wg)
+
+	wg.Add(1)
+	go self.CleanOnExit(ctx, wg)
 }
 
 func NewSender(

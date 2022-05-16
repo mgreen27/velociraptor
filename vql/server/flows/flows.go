@@ -82,7 +82,7 @@ func (self FlowsPlugin) Call(
 
 		if arg.FlowId != "" {
 			sender(arg.FlowId, arg.ClientId)
-			vfilter.ChargeOp(scope)
+			scope.ChargeOp()
 			return
 		}
 
@@ -97,7 +97,7 @@ func (self FlowsPlugin) Call(
 		for _, child_urn := range flow_urns {
 			if !child_urn.IsDir() {
 				sender(child_urn.Base(), arg.ClientId)
-				vfilter.ChargeOp(scope)
+				scope.ChargeOp()
 			}
 		}
 	}()
@@ -174,7 +174,7 @@ func (self EnumerateFlowPlugin) Call(
 
 		err := vql_subsystem.CheckAccess(scope, acls.READ_RESULTS)
 		if err != nil {
-			scope.Log("flows: %s", err)
+			scope.Log("enumerate_flow: %s", err)
 			return
 		}
 
@@ -262,13 +262,14 @@ func (self EnumerateFlowPlugin) Call(
 		}
 
 		r.emit_ds("Notebook", flow_path_manager.Notebook().Path())
-		db.Walk(config_obj, flow_path_manager.Notebook().DSDirectory(),
+		datastore.Walk(config_obj, db, flow_path_manager.Notebook().DSDirectory(),
 			func(path api.DSPathSpec) error {
 				r.emit_ds("NotebookData", path)
 				return nil
 			})
 
-		file_store_factory.Walk(flow_path_manager.Notebook().Directory(),
+		api.Walk(file_store_factory,
+			flow_path_manager.Notebook().Directory(),
 			func(path api.FSPathSpec, info os.FileInfo) error {
 				r.emit_fs("NotebookItem", path)
 				return nil

@@ -26,8 +26,8 @@ parameters:
     default: C:\Users\*\NTUSER.DAT
 
 sources:
-  - queries:
-      - LET TMP = SELECT * FROM foreach(
+  - query: |
+      LET TMP = SELECT * FROM foreach(
          row={
             SELECT FullPath FROM glob(globs=UserHomes)
          },
@@ -39,20 +39,21 @@ sources:
                       string=Key.FullPath,
                       regex="/Users/(?P<User>[^/]+)/ntuser.dat").User AS User
             FROM read_reg_key(
-               globs=url(scheme="ntfs",
-                  path=FullPath,
-                  fragment=RecentAppsKey).String,
+               globs=RecentAppsKey,
+               root=pathspec(
+                 DelegateAccessor="ntfs",
+                 DelegatePath=FullPath),
                accessor="raw_reg")
          })
 
-      - LET A1 = SELECT * FROM if(
+      LET A1 = SELECT * FROM if(
           condition=UserFilter,
           then={
             SELECT * FROM TMP WHERE User =~ UserFilter
-          }, else=TMP)
+          }, else={ SELECT * FROM TMP})
 
-      - SELECT * FROM if(
+      SELECT * FROM if(
           condition=ExecutionTimeAfter,
           then={
             SELECT * FROM A1 WHERE LastExecutionTS > ExecutionTimeAfter
-          }, else=A1)
+          }, else={ SELECT * FROM A1})

@@ -161,8 +161,13 @@ func main() {
 		WithFileLoader(*config_path).
 		WithEmbedded().
 		WithEnvLoader("VELOCIRAPTOR_CONFIG").
+		WithConfigMutator(func(config_obj *config_proto.Config) error {
+			return mergeFlagConfig(config_obj, default_config)
+		}).
 		WithCustomValidator(initFilestoreAccessor).
 		WithCustomValidator(initDebugServer).
+		WithConfigMutator(applyMinionRole).
+		WithCustomValidator(applyAnalysisTarget).
 		WithLogFile(*logging_flag)
 
 	if *trace_flag != "" {
@@ -197,12 +202,14 @@ func makeDefaultConfigLoader() *config.Loader {
 		WithFileLoader(*config_path).
 		WithEmbedded().
 		WithEnvLoader("VELOCIRAPTOR_CONFIG").
+		WithConfigMutator(func(config_obj *config_proto.Config) error {
+			return mergeFlagConfig(config_obj, default_config)
+		}).
 		WithCustomValidator(initFilestoreAccessor).
 		WithCustomValidator(initDebugServer).
 		WithLogFile(*logging_flag).
 		WithOverride(*override_flag).
-		WithCustomValidator(func(config_obj *config_proto.Config) error {
-			return mergeFlagConfig(config_obj, default_config)
-		}).
-		WithCustomValidator(ensureProxy)
+		WithConfigMutator(applyMinionRole).
+		WithCustomValidator(ensureProxy).
+		WithCustomValidator(applyAnalysisTarget)
 }

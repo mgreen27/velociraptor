@@ -44,6 +44,9 @@ message ArtifactCollectorArgs {
             default: "1000000",
         }];
 
+    float cpu_limit = 25;
+    float iops_limit = 26;
+
     // Resource limits on this collection.
     uint64 timeout = 7 [(sem_type) = {
             description: "Number of seconds to run before cancelling the query.",
@@ -83,6 +86,15 @@ message ArtifactUploadedFileInfo {
     uint64 size = 3;
     uint64 stored_size = 4;
     repeated string components = 5;
+}
+
+// Maintain this also outside the collector context. It will be
+// updated each time anyting about the collection is changed, without
+// having to race updating the main record. The read active_time is
+// the latest between this record and the one in
+// ArtifactCollectorContext
+message PingContext {
+    uint64 active_time = 1;
 }
 
 // This context is serialized into the data store.

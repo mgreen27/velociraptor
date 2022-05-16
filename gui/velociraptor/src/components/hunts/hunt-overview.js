@@ -27,6 +27,7 @@ export default class HuntOverview extends React.Component {
     static contextType = UserConfig;
 
     static propTypes = {
+        fetch_hunts: PropTypes.func,
         hunt: PropTypes.object,
     };
 
@@ -103,7 +104,8 @@ export default class HuntOverview extends React.Component {
         this.setState({preparing: true});
         api.post("v1/CreateDownload", params,
                  this.source.token).then(resp=>{
-            this.setState({preparing: false});
+                     this.setState({preparing: false});
+                     this.props.fetch_hunts();
         });
     }
 
@@ -159,6 +161,10 @@ export default class HuntOverview extends React.Component {
 
                     <dt className="col-4">Ops/Sec</dt>
                     <dd className="col-8">{start_request.ops_per_second || 'Unlimited'}</dd>
+                    <dt className="col-4">CPU Limit</dt>
+                    <dd className="col-8">{start_request.cpu_limit || 'Unlimited'}</dd>
+                    <dt className="col-4">IOPS Limit</dt>
+                    <dd className="col-8">{start_request.iops_limit || 'Unlimited'}</dd>
                     { labels && <>
                                   <dt className="col-4">Include Labels</dt>
                                   <dd className="col-8">

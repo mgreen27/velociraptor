@@ -26,6 +26,7 @@
 package api
 
 import (
+	"html"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -70,7 +71,7 @@ var (
 
 func returnError(w http.ResponseWriter, code int, message string) {
 	w.WriteHeader(code)
-	_, _ = w.Write([]byte(message))
+	_, _ = w.Write([]byte(html.EscapeString(message)))
 }
 
 type vfsFileDownloadRequest struct {
@@ -248,7 +249,7 @@ func getTransformer(
 
 			flow, err := flows.LoadCollectionContext(config_obj, client_id, flow_id)
 			if err != nil {
-				flow = &flows_proto.ArtifactCollectorContext{}
+				flow = flows.NewCollectionContext(config_obj)
 			}
 
 			return ordereddict.NewDict().
@@ -323,7 +324,8 @@ func downloadTable(config_obj *config_proto.Config) http.Handler {
 			}).Info("DownloadTable")
 
 			scope := vql_subsystem.MakeScope()
-			csv_writer := csv.GetCSVAppender(scope, w, true /* write_headers */)
+			csv_writer := csv.GetCSVAppender(
+				config_obj, scope, w, true /* write_headers */)
 			for row := range row_chan {
 				csv_writer.Write(
 					filterColumns(request.Columns, transform(row)))

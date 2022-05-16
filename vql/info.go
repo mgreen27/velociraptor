@@ -24,7 +24,7 @@ import (
 
 	fqdn "github.com/Showmax/go-fqdn"
 	"github.com/Velocidex/ordereddict"
-	"github.com/shirou/gopsutil/host"
+	"github.com/shirou/gopsutil/v3/host"
 
 	"www.velocidex.com/golang/velociraptor/acls"
 	"www.velocidex.com/golang/vfilter"
@@ -45,8 +45,10 @@ func getInfo(host *host.InfoStat) *ordereddict.Dict {
 		Set("KernelVersion", host.KernelVersion).
 		Set("VirtualizationSystem", host.VirtualizationSystem).
 		Set("VirtualizationRole", host.VirtualizationRole).
+		Set("CompilerVersion", runtime.Version()).
 		Set("HostID", host.HostID).
-		Set("Exe", me)
+		Set("Exe", me).
+		Set("IsAdmin", IsAdmin())
 }
 
 func init() {

@@ -49,10 +49,19 @@ const (
 
 type ResultSetWriterImpl struct {
 	mu       sync.Mutex
-	rows     []*ordereddict.Dict
+	rows     [][]byte
 	opts     *json.EncOpts
 	fd       api.FileWriter
 	index_fd api.FileWriter
+
+	sync bool
+}
+
+func (self *ResultSetWriterImpl) SetSync() {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+
+	self.sync = true
 }
 
 // WriteJSONL writes an entire JSONL blob to the end of the result
@@ -66,6 +75,10 @@ type ResultSetWriterImpl struct {
 // the indicated offset then reading lines off it until they reach the
 // desired row index.
 func (self *ResultSetWriterImpl) WriteJSONL(serialized []byte, total_rows uint64) {
+	if total_rows == 0 {
+		total_rows = countLines(serialized)
+	}
+
 	// Sync the index with the current buffers.
 	self.Flush()
 
@@ -93,7 +106,14 @@ func (self *ResultSetWriterImpl) Write(row *ordereddict.Dict) {
 	self.mu.Lock()
 	defer self.mu.Unlock()
 
-	self.rows = append(self.rows, row)
+	// Encode each row ASAP but then store the raw json for combined
+	// writes. This allows us to get rid of memory ASAP.
+	serialized, err := vjson.MarshalWithOptions(row, self.opts)
+	if err != nil {
+		return
+	}
+
+	self.rows = append(self.rows, serialized)
 	if len(self.rows) > 10000 {
 		self._Flush()
 	}
@@ -119,13 +139,9 @@ func (self *ResultSetWriterImpl) _Flush() {
 	out := &bytes.Buffer{}
 	offsets := new(bytes.Buffer)
 	for _, row := range self.rows {
-		serialized, err := vjson.MarshalWithOptions(row, self.opts)
-		if err != nil {
-			return
-		}
 
 		// Write line delimited JSON
-		out.Write(serialized)
+		out.Write(row)
 		out.Write([]byte{'\n'})
 		err = binary.Write(offsets, binary.LittleEndian, offset)
 		if err != nil {
@@ -133,18 +149,25 @@ func (self *ResultSetWriterImpl) _Flush() {
 		}
 
 		// Include the line feed in the count.
-		offset += int64(len(serialized) + 1)
+		offset += int64(len(row) + 1)
 	}
 
 	_, _ = self.fd.Write(out.Bytes())
 	_, _ = self.index_fd.Write(offsets.Bytes())
-	self.rows = nil
+
+	// Reset the slice but keep the capacity.
+	self.rows = self.rows[:0]
 }
 
 func (self *ResultSetWriterImpl) Close() {
 	self.Flush()
 	self.fd.Close()
 	self.index_fd.Close()
+
+	if self.sync {
+		self.fd.Flush()
+		self.index_fd.Flush()
+	}
 }
 
 type ResultSetFactory struct{}
@@ -153,14 +176,18 @@ func (self ResultSetFactory) NewResultSetWriter(
 	file_store_factory api.FileStore,
 	log_path api.FSPathSpec,
 	opts *json.EncOpts,
-	truncate bool) (result_sets.ResultSetWriter, error) {
+	completion func(),
+	truncate result_sets.WriteMode) (result_sets.ResultSetWriter, error) {
+
+	result := &ResultSetWriterImpl{opts: opts}
 
 	// If no path is provided, we are just a log sink
 	if utils.IsNil(log_path) {
 		return &NullResultSetWriter{}, nil
 	}
 
-	fd, err := file_store_factory.WriteFile(log_path)
+	fd, err := file_store_factory.WriteFileWithCompletion(
+		log_path, completion)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +216,10 @@ func (self ResultSetFactory) NewResultSetWriter(
 
 	}
 
-	return &ResultSetWriterImpl{fd: fd, opts: opts, index_fd: idx_fd}, nil
+	result.fd = fd
+	result.index_fd = idx_fd
+
+	return result, nil
 }
 
 // A ResultSetReader can produce rows from a result set.
@@ -308,7 +338,7 @@ func (self *ResultSetReaderImpl) Rows(ctx context.Context) <-chan *ordereddict.D
 	return output
 }
 
-// Only used in tests - not safe for generate use.
+// Only used in tests - not safe for general use.
 func (self *ResultSetReaderImpl) GetAllResults() []*ordereddict.Dict {
 	result := []*ordereddict.Dict{}
 	for row := range self.Rows(context.Background()) {
@@ -354,6 +384,7 @@ func (self ResultSetFactory) NewResultSetReader(
 	} else if err != nil {
 		return nil, err
 	}
+	// Keep the open file until the reader is closed.
 
 	// -1 indicates we dont know how many rows there are
 	total_rows := int64(-1)
@@ -379,6 +410,16 @@ func (self ResultSetFactory) NewResultSetReader(
 		idx_fd:     idx_fd,
 		log_path:   log_path,
 	}, nil
+}
+
+func countLines(serialized []byte) uint64 {
+	var result uint64
+	for _, i := range serialized {
+		if i == '\n' {
+			result++
+		}
+	}
+	return result
 }
 
 func init() {

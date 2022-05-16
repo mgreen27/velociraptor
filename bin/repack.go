@@ -28,13 +28,8 @@ import (
 	"os"
 	"regexp"
 
-	"github.com/Velocidex/yaml/v2"
-	errors "github.com/pkg/errors"
-	kingpin "gopkg.in/alecthomas/kingpin.v2"
 	"www.velocidex.com/golang/velociraptor/config"
-	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	logging "www.velocidex.com/golang/velociraptor/logging"
-	"www.velocidex.com/golang/velociraptor/services"
 )
 
 var (
@@ -59,62 +54,49 @@ var (
 	embedded_re = regexp.MustCompile(`#{3}<Begin Embedded Config>\r?\n`)
 )
 
-// Validate any embedded artifacts to make sure they compile properly.
-func validate_config(config_obj *config_proto.Config) error {
-	if config_obj.Autoexec != nil {
-		manager, err := services.GetRepositoryManager()
-		if err != nil {
-			return err
-		}
-		repository := manager.NewRepository()
-
-		for _, definition := range config_obj.Autoexec.ArtifactDefinitions {
-			serialized, err := yaml.Marshal(definition)
-			if err != nil {
-				return err
-			}
-
-			_, err = repository.LoadYaml(string(serialized), true /* validate */)
-			if err != nil {
-				return errors.New(
-					fmt.Sprintf("While parsing artifact: %s\n%s",
-						err, string(serialized)))
-			}
-		}
+func doRepack() error {
+	config_obj, err := new(config.Loader).
+		WithFileLoader(*repack_command_config).
+		LoadAndValidate()
+	if err != nil {
+		return fmt.Errorf("Unable to load config file: %w", err)
 	}
 
-	return nil
-}
-
-func doRepack() {
-	config_obj, err := new(config.Loader).WithFileLoader(*repack_command_config).
-		LoadAndValidate()
-	kingpin.FatalIfError(err, "Unable to open config file")
-
 	sm, err := startEssentialServices(config_obj)
-	kingpin.FatalIfError(err, "Starting services.")
+	if err != nil {
+		return fmt.Errorf("Starting services: %w", err)
+	}
 	defer sm.Close()
 
-	err = validate_config(config_obj)
-	kingpin.FatalIfError(err, "Validating config.")
+	// Load any embedded artifacts so we can identity syntax errors
+	err = load_config_artifacts(config_obj)
+	if err != nil {
+		return fmt.Errorf("Validating config: %w", err)
+	}
 
 	logger := logging.GetLogger(config_obj, &logging.ToolComponent)
 
 	config_fd, err := os.Open(*repack_command_config)
-	kingpin.FatalIfError(err, "Unable to open config file")
+	if err != nil {
+		return fmt.Errorf("Unable to open config file: %w", err)
+	}
 
 	config_data, err := ioutil.ReadAll(config_fd)
-	kingpin.FatalIfError(err, "Unable to open config file")
+	if err != nil {
+		return fmt.Errorf("Unable to open config file: %w", err)
+	}
 
 	// Compress the string.
 	var b bytes.Buffer
 	w := zlib.NewWriter(&b)
 	_, err = w.Write(config_data)
-	kingpin.FatalIfError(err, "Unable to write")
+	if err != nil {
+		return fmt.Errorf("Unable to write: %w", err)
+	}
 	w.Close()
 
 	if b.Len() > len(config.FileConfigDefaultYaml)-40 {
-		kingpin.FatalIfError(err, "config file is too large to embed.")
+		return fmt.Errorf("config file is too large to embed.")
 	}
 
 	config_data = b.Bytes()
@@ -127,20 +109,27 @@ func doRepack() {
 	input := *repack_command_exe
 	if input == "" {
 		input, err = os.Executable()
-		kingpin.FatalIfError(err, "Unable to open executable")
+		if err != nil {
+			return fmt.Errorf("Unable to open executable: %w", err)
+		}
 	}
 
 	fd, err := os.Open(input)
-	kingpin.FatalIfError(err, "Unable to open executable")
+	if err != nil {
+		return fmt.Errorf("Unable to open executable: %w", err)
+	}
 	defer fd.Close()
 
 	outfd, err := os.OpenFile(*repack_command_output,
 		os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
-	kingpin.FatalIfError(err, "Unable to create output file")
+	if err != nil {
+		return fmt.Errorf("Unable to create output file: %w", err)
+	}
 
 	data, err := ioutil.ReadAll(fd)
-	kingpin.FatalIfError(err, "Unable to read executable")
-
+	if err != nil {
+		return fmt.Errorf("Unable to read executable: %w", err)
+	}
 	logger.Info("Read complete binary at %v bytes\n", len(data))
 
 	if *repack_command_append != nil {
@@ -148,7 +137,9 @@ func doRepack() {
 		// cover the entire binary.
 		if string(data[0:2]) == "MZ" {
 			stat, err := (*repack_command_append).Stat()
-			kingpin.FatalIfError(err, "Unable to read appended file")
+			if err != nil {
+				return fmt.Errorf("Unable to read appended file: %w", err)
+			}
 
 			end_of_file := int64(len(data)) + stat.Size()
 
@@ -168,41 +159,50 @@ func doRepack() {
 		}
 
 		appended, err := ioutil.ReadAll(*repack_command_append)
-		kingpin.FatalIfError(err, "Unable to read appended file")
+		if err != nil {
+			return fmt.Errorf("Unable to read appended file: %w", err)
+		}
 
 		data = append(data, appended...)
 	}
 
 	match := embedded_re.FindIndex(data)
 	if match == nil {
-		kingpin.Fatalf("I can not seem to locate the embedded config????")
+		return fmt.Errorf("I can not seem to locate the embedded config????")
 	}
 
 	end := match[1]
 
 	logger.Info("Write %v\n", len(data[:end]))
 	_, err = outfd.Write(data[:end])
-	kingpin.FatalIfError(err, "Writing")
+	if err != nil {
+		return err
+	}
 
 	logger.Info("Write %v\n", len(config_data))
 	_, err = outfd.Write(config_data)
-	kingpin.FatalIfError(err, "Writing")
+	if err != nil {
+		return err
+	}
 
 	logger.Info("Write %v\n", len(data[end+len(config_data):]))
 	_, err = outfd.Write(data[end+len(config_data):])
-	kingpin.FatalIfError(err, "Writing")
+	if err != nil {
+		return err
+	}
 
 	err = outfd.Close()
-	kingpin.FatalIfError(err, "Writing")
+	if err != nil {
+		return err
+	}
 
-	err = os.Chmod(outfd.Name(), 0777)
-	kingpin.FatalIfError(err, "Chmod")
+	return os.Chmod(outfd.Name(), 0777)
 }
 
 func init() {
 	command_handlers = append(command_handlers, func(command string) bool {
-		if command == "config repack" {
-			doRepack()
+		if command == repack_command.FullCommand() {
+			FatalIfError(repack_command, doRepack)
 			return true
 		}
 

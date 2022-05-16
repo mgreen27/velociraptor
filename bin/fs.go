@@ -18,6 +18,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -26,12 +28,11 @@ import (
 	"strings"
 
 	"github.com/Velocidex/ordereddict"
-	kingpin "gopkg.in/alecthomas/kingpin.v2"
+	"www.velocidex.com/golang/velociraptor/accessors"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/file_store"
-	"www.velocidex.com/golang/velociraptor/file_store/api"
 	"www.velocidex.com/golang/velociraptor/file_store/path_specs"
-	"www.velocidex.com/golang/velociraptor/glob"
+	"www.velocidex.com/golang/velociraptor/file_store/uploader"
 	logging "www.velocidex.com/golang/velociraptor/logging"
 	"www.velocidex.com/golang/velociraptor/reporting"
 	"www.velocidex.com/golang/velociraptor/services"
@@ -74,26 +75,31 @@ var (
 )
 
 func eval_query(
-	config_obj *config_proto.Config, format, query string, scope vfilter.Scope,
-	env *ordereddict.Dict) {
+	ctx context.Context,
+	config_obj *config_proto.Config,
+	format, query string, scope vfilter.Scope,
+	env *ordereddict.Dict) error {
 	if config_obj.ApiConfig != nil && config_obj.ApiConfig.Name != "" {
 		logging.GetLogger(config_obj, &logging.ToolComponent).
 			Info("API Client configuration loaded - will make gRPC connection.")
-		doRemoteQuery(config_obj, format, []string{query}, env)
-		return
+		return doRemoteQuery(config_obj, format, []string{query}, env)
 	}
 
-	eval_local_query(config_obj, *fs_command_format, query, scope)
+	return eval_local_query(ctx, config_obj, *fs_command_format, query, scope)
 }
 
 func eval_local_query(
+	top_ctx context.Context,
 	config_obj *config_proto.Config, format string,
-	query string, scope vfilter.Scope) {
+	query string, scope vfilter.Scope) error {
 
 	vqls, err := vfilter.MultiParse(query)
-	kingpin.FatalIfError(err, "Unable to parse VQL Query")
+	if err != nil {
+		return fmt.Errorf("Unable to parse VQL Query: %w", err)
+	}
 
-	ctx := InstallSignalHandler(scope)
+	ctx, cancel := InstallSignalHandler(top_ctx, scope)
+	defer cancel()
 
 	for _, vql := range vqls {
 		switch format {
@@ -102,23 +108,28 @@ func eval_local_query(
 			table.Render()
 
 		case "csv":
-			outputCSV(ctx, scope, vql, os.Stdout)
+			return outputCSV(ctx, config_obj, scope, vql, os.Stdout)
 
 		case "jsonl":
-			outputJSONL(ctx, scope, vql, os.Stdout)
+			return outputJSONL(ctx, scope, vql, os.Stdout)
 
 		case "json":
-			outputJSON(ctx, scope, vql, os.Stdout)
+			return outputJSON(ctx, scope, vql, os.Stdout)
 		}
 	}
+	return nil
 }
 
-func doLS(path, accessor string) {
+func doLS(path, accessor string) error {
 	config_obj, err := APIConfigLoader.WithNullLoader().LoadAndValidate()
-	kingpin.FatalIfError(err, "Load Config ")
+	if err != nil {
+		return fmt.Errorf("Unable to load config file: %w", err)
+	}
 
 	sm, err := startEssentialServices(config_obj)
-	kingpin.FatalIfError(err, "Starting services.")
+	if err != nil {
+		return fmt.Errorf("Starting services: %w", err)
+	}
 	defer sm.Close()
 
 	matches := accessor_reg.FindStringSubmatch(path)
@@ -144,7 +155,9 @@ func doLS(path, accessor string) {
 	}
 
 	manager, err := services.GetRepositoryManager()
-	kingpin.FatalIfError(err, "GetRepositoryManager")
+	if err != nil {
+		return err
+	}
 	scope := manager.BuildScope(builder)
 	defer scope.Close()
 
@@ -159,15 +172,20 @@ func doLS(path, accessor string) {
 		query += " WHERE Sys.name_type != 'DOS' "
 	}
 
-	eval_query(config_obj, *fs_command_format, query, scope, builder.Env)
+	return eval_query(sm.Ctx, config_obj,
+		*fs_command_format, query, scope, builder.Env)
 }
 
-func doRM(path, accessor string) {
+func doRM(path, accessor string) error {
 	config_obj, err := APIConfigLoader.WithNullLoader().LoadAndValidate()
-	kingpin.FatalIfError(err, "Load Config ")
+	if err != nil {
+		return fmt.Errorf("Unable to load config file: %w", err)
+	}
 
 	sm, err := startEssentialServices(config_obj)
-	kingpin.FatalIfError(err, "Starting services.")
+	if err != nil {
+		return fmt.Errorf("Starting services: %w", err)
+	}
 	defer sm.Close()
 
 	matches := accessor_reg.FindStringSubmatch(path)
@@ -182,7 +200,7 @@ func doRM(path, accessor string) {
 	}
 
 	if accessor != "fs" {
-		kingpin.Fatalf("Only fs:// URLs support removal")
+		return fmt.Errorf("Only fs:// URLs support removal")
 	}
 
 	builder := services.ScopeBuilder{
@@ -194,7 +212,9 @@ func doRM(path, accessor string) {
 			Set("path", path),
 	}
 	manager, err := services.GetRepositoryManager()
-	kingpin.FatalIfError(err, "GetRepositoryManager")
+	if err != nil {
+		return err
+	}
 	scope := manager.BuildScope(builder)
 	defer scope.Close()
 
@@ -202,15 +222,21 @@ func doRM(path, accessor string) {
 		"file_store_delete(path=FullPath) AS Deletion " +
 		"FROM glob(globs=path, accessor=accessor) "
 
-	eval_query(config_obj, *fs_command_format, query, scope, builder.Env)
+	return eval_query(sm.Ctx,
+		config_obj, *fs_command_format, query, scope, builder.Env)
 }
 
-func doCp(path, accessor string, dump_dir string) {
-	config_obj, err := APIConfigLoader.WithNullLoader().LoadAndValidate()
-	kingpin.FatalIfError(err, "Load Config ")
+func doCp(path, accessor string, dump_dir string) error {
+	config_obj, err := APIConfigLoader.
+		WithNullLoader().LoadAndValidate()
+	if err != nil {
+		return fmt.Errorf("Unable to load config file: %w", err)
+	}
 
 	sm, err := startEssentialServices(config_obj)
-	kingpin.FatalIfError(err, "Starting services.")
+	if err != nil {
+		return fmt.Errorf("Starting services: %w", err)
+	}
 	defer sm.Close()
 
 	matches := accessor_reg.FindStringSubmatch(path)
@@ -254,24 +280,26 @@ func doCp(path, accessor string, dump_dir string) {
 
 	case "fs":
 		output_path_spec := path_specs.NewSafeFilestorePath(output_path)
-		builder.Uploader = api.NewFileStoreUploader(
+		builder.Uploader = uploader.NewFileStoreUploader(
 			config_obj,
 			file_store.GetFileStore(config_obj),
 			output_path_spec)
 
 	default:
-		kingpin.Fatalf("Can not write to accessor %v\n", output_accessor)
+		return fmt.Errorf("Can not write to accessor %v\n", output_accessor)
 	}
 
 	manager, err := services.GetRepositoryManager()
-	kingpin.FatalIfError(err, "GetRepositoryManager")
+	if err != nil {
+		return err
+	}
 	scope := manager.BuildScope(builder)
 	defer scope.Close()
 
 	scope.Log("Copy from %v (%v) to %v (%v)",
 		path, accessor, output_path, output_accessor)
 
-	eval_query(config_obj, *fs_command_format, `
+	return eval_query(sm.Ctx, config_obj, *fs_command_format, `
 SELECT * from foreach(
   row={
     SELECT Name, Size, Mode.String AS Mode,
@@ -284,9 +312,12 @@ SELECT * from foreach(
   })`, scope, builder.Env)
 }
 
-func doCat(path, accessor_name string) {
-	_, err := APIConfigLoader.WithNullLoader().LoadAndValidate()
-	kingpin.FatalIfError(err, "Load Config ")
+func doCat(path, accessor_name string) error {
+	_, err := APIConfigLoader.
+		WithNullLoader().LoadAndValidate()
+	if err != nil {
+		return fmt.Errorf("Unable to load config file: %w", err)
+	}
 
 	matches := accessor_reg.FindStringSubmatch(path)
 	if matches != nil {
@@ -295,30 +326,42 @@ func doCat(path, accessor_name string) {
 	}
 
 	scope := vql_subsystem.MakeScope()
-	accessor, err := glob.GetAccessor(accessor_name, scope)
-	kingpin.FatalIfError(err, "GetAccessor")
+	accessor, err := accessors.GetAccessor(accessor_name, scope)
+	if err != nil {
+		return err
+	}
 
 	fd, err := accessor.Open(path)
-	kingpin.FatalIfError(err, "ReadFile")
+	if err != nil {
+		return err
+	}
 
 	_, err = io.Copy(os.Stdout, fd)
-	kingpin.FatalIfError(err, "Copy file")
+	return err
 }
 
 // Install a fs accessor to enable access to the file store. But make
 // it lazy - no need to connect to the file store un-neccesarily.
 type FileStoreAccessorFactory struct {
+	accessors.VirtualFilesystemAccessor
 	config_obj *config_proto.Config
 }
 
-func (self FileStoreAccessorFactory) New(scope vfilter.Scope) (glob.FileSystemAccessor, error) {
+func (self FileStoreAccessorFactory) New(scope vfilter.Scope) (
+	accessors.FileSystemAccessor, error) {
 	return file_store.GetFileStoreFileSystemAccessor(self.config_obj)
 }
 
 // Only register the filesystem accessor if we have a proper valid server config.
 func initFilestoreAccessor(config_obj *config_proto.Config) error {
 	if config_obj.Datastore != nil {
-		glob.Register("fs", &FileStoreAccessorFactory{config_obj})
+		accessors.Register("fs", &FileStoreAccessorFactory{
+			config_obj: config_obj,
+		},
+			`Provide access the the server's filestore and datastore.
+
+Many VQL plugins produce references to files stored on the server. This accessor can be used to open those files and read them. Typically references to filestore or datastore files have the "fs:" or "ds:" prefix.
+`)
 	}
 	return nil
 }

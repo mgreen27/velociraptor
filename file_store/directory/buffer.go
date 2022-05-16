@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/Velocidex/ordereddict"
+	"github.com/sirupsen/logrus"
 	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
 	"www.velocidex.com/golang/velociraptor/constants"
 	"www.velocidex.com/golang/velociraptor/json"
@@ -75,6 +76,8 @@ type FileBasedRingBuffer struct {
 	// messages this wg is added, then callers can decrement it as
 	// needed.
 	Wg sync.WaitGroup
+
+	max_size int64
 }
 
 // Enqueue the item into the ring buffer and append to the end.
@@ -86,6 +89,18 @@ func (self *FileBasedRingBuffer) Enqueue(item interface{}) error {
 
 	self.mu.Lock()
 	defer self.mu.Unlock()
+
+	// If the file is too large we truncate it and report that we lost
+	// some data.
+	if self.max_size > 0 && self.header.WritePointer > self.max_size {
+		logger := logging.GetLogger(
+			self.config_obj, &logging.FrontendComponent)
+		logger.WithFields(logrus.Fields{
+			"name":       self.fd.Name(),
+			"bytes_lost": self.header.WritePointer - self.header.ReadPointer,
+		}).Error("Buffer file too large")
+		self._Truncate()
+	}
 
 	// Write the new message to the end of the file at the WritePointer
 	binary.LittleEndian.PutUint64(self.write_buf, uint64(len(serialized)))
@@ -127,7 +142,6 @@ func (self *FileBasedRingBuffer) Lease(count int) []*ordereddict.Dict {
 
 	// The file contains more data.
 	for self.header.WritePointer > self.header.ReadPointer {
-
 		// Read the next chunk (length+value) from the current leased pointer.
 		n, err := self.fd.ReadAt(self.read_buf, self.header.ReadPointer)
 		if err != nil || n != len(self.read_buf) {
@@ -165,6 +179,7 @@ func (self *FileBasedRingBuffer) Lease(count int) []*ordereddict.Dict {
 		}
 
 		self.header.ReadPointer += 8 + int64(n)
+
 		// We read up to the write pointer, we may truncate the file now.
 		if self.header.ReadPointer == self.header.WritePointer {
 			self._Truncate()
@@ -205,7 +220,6 @@ func NewFileBasedRingBuffer(
 	config_obj *config_proto.Config, fd *os.File) (*FileBasedRingBuffer, error) {
 
 	log_ctx := logging.GetLogger(config_obj, &logging.FrontendComponent)
-
 	header := &Header{
 		// Pad the header a bit to allow for extensions.
 		WritePointer: FirstRecordOffset,
@@ -241,6 +255,12 @@ func NewFileBasedRingBuffer(
 		read_buf:   make([]byte, 8),
 		write_buf:  make([]byte, 8),
 		log_ctx:    log_ctx,
+		max_size:   1024 * 1024 * 1024, // 1Gb
+	}
+
+	if config_obj.Frontend != nil && config_obj.Frontend.Resources != nil &&
+		config_obj.Frontend.Resources.MaxJournalBufferSize > 0 {
+		result.max_size = config_obj.Frontend.Resources.MaxJournalBufferSize
 	}
 
 	return result, nil

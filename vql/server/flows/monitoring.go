@@ -55,7 +55,8 @@ func (self MonitoringPlugin) Call(
 
 		arg := &SourcePluginArgs{}
 
-		// Allow the plugin to be filled in from the environment
+		// Allow the plugin to be filled in from the environment. Arg
+		// parser will override the environment with the actual args.
 		ParseSourceArgsFromScope(arg, scope)
 
 		err = arg_parser.ExtractArgsWithContext(ctx, scope, args, arg)
@@ -201,7 +202,8 @@ func (self WatchMonitoringPlugin) Call(
 		}
 
 		// Ask the journal service to watch the event queue for us.
-		qm_chan, cancel := journal.Watch(ctx, arg.Artifact)
+		qm_chan, cancel := journal.Watch(
+			ctx, arg.Artifact, "watch_monitoring plugin")
 
 		// Make sure to call this at shutdown (defer is not guaranteed
 		// to run).

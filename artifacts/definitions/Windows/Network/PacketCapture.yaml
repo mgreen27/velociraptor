@@ -31,13 +31,14 @@ sources:
         LET ExePath <= tempfile(extension='.exe')
 
         LET etl2pcapbin <= SELECT
-                    copy(
-                        filename=url(path=tool_zip[0].FullPath,
-                                     fragment="etl2pcapng/x64/etl2pcapng.exe").String,
-                        dest=ExePath,
-                        accessor='zip'
-                    ) AS file
-                FROM scope()
+            copy(
+              filename=pathspec(
+                 DelegatePath=tool_zip[0].FullPath,
+                 Path="etl2pcapng/x64/etl2pcapng.exe"),
+              dest=ExePath,
+              accessor='zip'
+            ) AS file
+        FROM scope()
 
         LET outfile <= tempfile(extension=".pcapng")
 
@@ -65,6 +66,6 @@ sources:
 
         SELECT * FROM if(
                 condition=StartTrace,
-                then=launch_trace,
-                else=end_trace
+                then={ SELECT * FROM launch_trace},
+                else={ SELECT * FROM end_trace }
         )

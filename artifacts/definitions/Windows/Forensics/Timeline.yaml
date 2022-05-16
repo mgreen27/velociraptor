@@ -21,17 +21,19 @@ parameters:
 precondition: SELECT OS From info() where OS = 'windows'
 
 sources:
-  - queries:
-      - LET timeline = SELECT * FROM foreach(
+  - query: |
+      LET timeline = SELECT * FROM foreach(
          row={
-            SELECT FullPath FROM glob(globs=Win10TimelineGlob)
+            SELECT FullPath
+            FROM glob(globs=Win10TimelineGlob)
          },
          query={
             SELECT AppId, FullPath, LastModifiedTime
             FROM sqlite(file=FullPath, query="SELECT * FROM Activity")
          })
-      - LET TMP = SELECT get(
-               item=parse_json_array(data=AppId).application,
+
+      LET TMP = SELECT get(
+      item=parse_json_array(data=AppId).application,
                member="0") AS Application,
              parse_string_with_regex(
                string=FullPath,
@@ -39,13 +41,15 @@ sources:
                LastModifiedTime,
                LastModifiedTime.Unix as LastExecutionTS
         FROM timeline
-      - LET A1 = SELECT * FROM if(
+
+      LET A1 = SELECT * FROM if(
           condition=UserFilter,
           then={
             SELECT * FROM TMP WHERE User =~ UserFilter
-          }, else=TMP)
-      - SELECT * FROM if(
+          }, else={ SELECT * FROM TMP})
+
+      SELECT * FROM if(
           condition=ExecutionTimeAfter,
           then={
             SELECT * FROM A1 WHERE LastExecutionTS > ExecutionTimeAfter
-          }, else=A1)
+          }, else={ SELECT * FROM A1})

@@ -2,8 +2,11 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/Velocidex/ordereddict"
 	"www.velocidex.com/golang/velociraptor/acls"
@@ -18,6 +21,7 @@ import (
 	"www.velocidex.com/golang/velociraptor/json"
 	"www.velocidex.com/golang/velociraptor/reporting"
 	"www.velocidex.com/golang/velociraptor/services"
+	"www.velocidex.com/golang/velociraptor/utils"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
 	"www.velocidex.com/golang/velociraptor/vql/functions"
 	"www.velocidex.com/golang/vfilter"
@@ -34,6 +38,11 @@ type CollectPluginArgs struct {
 	ArtifactDefinitions vfilter.Any `vfilter:"optional,field=artifact_definitions,doc=Optional additional custom artifacts."`
 	Template            string      `vfilter:"optional,field=template,doc=The name of a template artifact (i.e. one which has report of type HTML)."`
 	Level               int64       `vfilter:"optional,field=level,doc=Compression level between 0 (no compression) and 9."`
+	OpsPerSecond        int64       `vfilter:"optional,field=ops_per_sec,doc=Rate limiting for collections (deprecated)."`
+	CpuLimit            float64     `vfilter:"optional,field=cpu_limit,doc=Set query cpu_limit value"`
+	IopsLimit           float64     `vfilter:"optional,field=iops_limit,doc=Set query iops_limit value"`
+	ProgressTimeout     float64     `vfilter:"optional,field=progress_timeout,doc=If no progress is detected in this many seconds, we terminate the query and output debugging information"`
+	Timeout             float64     `vfilter:"optional,field=timeout,doc=Total amount of time in seconds, this collection will take. Collection is cancelled when timeout is exceeded."`
 }
 
 type CollectPlugin struct{}
@@ -50,13 +59,9 @@ func (self CollectPlugin) Call(
 		var container *reporting.Container
 		var closer func()
 
-		// This plugin allows one to create files, collect
-		// artifacts and also define new artifacts. It is very
-		// privileged.
-		err := vql_subsystem.CheckAccess(scope,
-			acls.COLLECT_SERVER, acls.ARTIFACT_WRITER,
-			acls.FILESYSTEM_WRITE,
-			acls.SERVER_ARTIFACT_WRITER)
+		// This plugin allows one to create files (for the output
+		// zip), It is very privileged.
+		err := vql_subsystem.CheckAccess(scope, acls.FILESYSTEM_WRITE)
 		if err != nil {
 			scope.Log("collect: %s", err)
 			return
@@ -88,7 +93,7 @@ func (self CollectPlugin) Call(
 		}
 
 		// Get a new artifact repository with extra definitions added.
-		repository, err := getRepository(config_obj, arg.ArtifactDefinitions)
+		repository, err := getRepository(scope, config_obj, arg.ArtifactDefinitions)
 		if err != nil {
 			scope.Log("collect: %v", err)
 			return
@@ -101,13 +106,46 @@ func (self CollectPlugin) Call(
 			return
 		}
 
+		// Run the query with a potential subctx with timeout and
+		// cancellation different than our own.
+		subctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		// Apply a timeout if requested.
+		if arg.Timeout > 0 {
+			start := time.Now()
+			timed_ctx, timed_cancel := context.WithTimeout(
+				ctx, time.Duration(arg.Timeout*1e9)*time.Nanosecond)
+
+			go func() {
+				select {
+				case <-ctx.Done():
+					timed_cancel()
+
+				case <-timed_ctx.Done():
+					scope.Log("collect: <red>Timeout Error:</> Collection timed out after %v",
+						time.Now().Sub(start))
+					// Cancel the main context.
+					cancel()
+					timed_cancel()
+				}
+			}()
+		}
+
 		// Create the output container
 		if arg.Output != "" {
-			container, closer, err = makeContainer(config_obj, scope, repository, arg)
+			container, closer, err = makeContainer(ctx,
+				config_obj, scope, repository, arg)
 			if err != nil {
 				scope.Log("collect: %v", err)
 				return
 			}
+
+			// If the query is interrupted we may not get to run the
+			// closer function. Add to scope destructors to ensure it
+			// gets called at query wind-down and that we wait for it
+			// to actually close.
+			vql_subsystem.GetRootScope(scope).AddDestructor(closer)
 
 			// When we exit, close the container and flush the
 			// name to the output channel.
@@ -118,8 +156,9 @@ func (self CollectPlugin) Call(
 				// Emit the result set for consumption by the
 				// rest of the query.
 				select {
-				case <-ctx.Done():
+				case <-subctx.Done():
 					return
+
 				case output_chan <- ordereddict.NewDict().
 					Set("Container", arg.Output).
 					Set("Report", arg.Report):
@@ -148,7 +187,7 @@ func (self CollectPlugin) Call(
 		}
 
 		vql_requests, err := launcher.CompileCollectorArgs(
-			ctx, config_obj, acl_manager, repository,
+			subctx, config_obj, acl_manager, repository,
 			services.CompilerOptions{}, request)
 		if err != nil {
 			scope.Log("collect: %v", err)
@@ -175,6 +214,20 @@ func (self CollectPlugin) Call(
 			subscope.AppendVars(env)
 			defer subscope.Close()
 
+			// Install throttler into the scope.
+			throttler := actions.NewThrottler(subctx, scope,
+				float64(arg.OpsPerSecond),
+				float64(arg.CpuLimit),
+				float64(arg.IopsLimit))
+
+			if arg.ProgressTimeout > 0 {
+				throttler = actions.NewProgressThrottler(
+					subctx, scope, cancel, throttler,
+					time.Duration(arg.ProgressTimeout*1e9)*time.Nanosecond)
+			}
+
+			subscope.SetThrottler(throttler)
+
 			// Run each query and store the results in the container
 			for _, query := range vql_request.Query {
 				// Useful to know what is going on with the collection.
@@ -189,10 +242,10 @@ func (self CollectPlugin) Call(
 
 					vql, err := vfilter.Parse(query.VQL)
 					if err != nil {
-						scope.Log("collect: %v", err)
+						subscope.Log("collect: %v", err)
 						return
 					}
-					for row := range vql.Eval(ctx, subscope) {
+					for row := range vql.Eval(subctx, subscope) {
 						output_chan <- row
 					}
 					query_log.Close()
@@ -201,7 +254,7 @@ func (self CollectPlugin) Call(
 				}
 
 				err = container.StoreArtifact(
-					config_obj, ctx, subscope, query, arg.Format)
+					config_obj, subctx, subscope, query, arg.Format)
 				if err != nil {
 					subscope.Log("collect: %v", err)
 					return
@@ -220,6 +273,7 @@ func (self CollectPlugin) Call(
 // Creates a container to write the results on. Results are completed
 // when container is closed.
 func makeContainer(
+	ctx context.Context,
 	config_obj *config_proto.Config,
 	scope vfilter.Scope,
 	repository services.Repository,
@@ -232,7 +286,8 @@ func makeContainer(
 
 	scope.Log("Setting compression level to %v", arg.Level)
 
-	container, err = reporting.NewContainer(arg.Output, arg.Password, arg.Level)
+	container, err = reporting.NewContainer(
+		config_obj, arg.Output, arg.Password, arg.Level)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -241,6 +296,9 @@ func makeContainer(
 
 	// On exit we create a report.
 	closer = func() {
+		if container.IsClosed() {
+			return
+		}
 		container.Close()
 
 		if arg.Report != "" {
@@ -274,7 +332,8 @@ func makeContainer(
 			}
 			defer fd.Close()
 
-			err = produceReport(config_obj, archive,
+			err = produceReport(ctx,
+				config_obj, archive,
 				arg.Template,
 				repository, fd,
 				definitions,
@@ -289,6 +348,7 @@ func makeContainer(
 }
 
 func getRepository(
+	scope vfilter.Scope,
 	config_obj *config_proto.Config,
 	extra_artifacts vfilter.Any) (services.Repository, error) {
 	manager, err := services.GetRepositoryManager()
@@ -313,10 +373,18 @@ func getRepository(
 			return err
 		}
 
-		_, err = repository.LoadYaml(string(serialized), true /* validate */)
+		artifact, err := repository.LoadYaml(
+			string(serialized), true /* validate */, false)
 		if err != nil {
 			return err
 		}
+
+		// Check if we are allows to add these artifacts
+		err = CheckArtifactModification(scope, artifact)
+		if err != nil {
+			return err
+		}
+
 		return nil
 	}
 
@@ -337,14 +405,26 @@ func getRepository(
 
 	case []string:
 		for _, item := range t {
-			_, err := repository.LoadYaml(item, true /* validate */)
+			artifact, err := repository.LoadYaml(item,
+				true /* validate */, false /* built_in */)
+			if err != nil {
+				return nil, err
+			}
+
+			err = CheckArtifactModification(scope, artifact)
 			if err != nil {
 				return nil, err
 			}
 		}
 
 	case string:
-		_, err := repository.LoadYaml(t, true /* validate */)
+		artifact, err := repository.LoadYaml(t,
+			true /* validate */, false /* built_in */)
+		if err != nil {
+			return nil, err
+		}
+
+		err = CheckArtifactModification(scope, artifact)
 		if err != nil {
 			return nil, err
 		}
@@ -362,7 +442,8 @@ func (self CollectPlugin) Info(scope vfilter.Scope, type_map *vfilter.TypeMap) *
 	}
 }
 
-// Parse the plugin arg into an artifact collector arg that can be compiled into VQL requests
+// Parse the plugin arg into an artifact collector arg that can be
+// compiled into VQL requests
 func getArtifactCollectorArgs(
 	config_obj *config_proto.Config,
 	repository services.Repository,
@@ -385,15 +466,20 @@ func getArtifactCollectorArgs(
 func AddSpecProtobuf(
 	config_obj *config_proto.Config,
 	repository services.Repository,
-	scope vfilter.Scope, spec vfilter.Any, request *flows_proto.ArtifactCollectorArgs) error {
-
-	var err error
+	scope vfilter.Scope, spec vfilter.Any,
+	request *flows_proto.ArtifactCollectorArgs) error {
 
 	for _, name := range scope.GetMembers(spec) {
 		artifact_definitions, pres := repository.Get(config_obj, name)
 		if !pres {
 			// Artifact not known
 			return fmt.Errorf(`Parameter 'args' refers to an unknown artifact (%v). The 'args' parameter should be of the form {"Custom.Artifact.Name":{"arg":"value"}}`, name)
+		}
+
+		// Check that we are allowed to collect this artifact
+		err := CheckArtifactCollection(scope, artifact_definitions)
+		if err != nil {
+			return err
 		}
 
 		spec_proto := &flows_proto.ArtifactSpec{
@@ -470,7 +556,7 @@ func AddSpecProtobuf(
 				}
 
 			case "timestamp":
-				if !is_str {
+				if !is_str && !utils.IsNil(value_any) {
 					value_time, err := functions.TimeFromAny(scope, value_any)
 					if err != nil {
 						scope.Log("Invalid timestamp for %v",
@@ -482,7 +568,8 @@ func AddSpecProtobuf(
 
 			case "csv":
 				if !is_str {
-					value_str, err = csv.EncodeToCSV(scope, value_any)
+					value_str, err = csv.EncodeToCSV(
+						config_obj, scope, value_any)
 					if err != nil {
 						scope.Log("Invalid CSV for %v",
 							parameter_definition.Name)
@@ -507,6 +594,72 @@ func AddSpecProtobuf(
 	}
 
 	return nil
+}
+
+// Check if the artifact can be added or modified.
+func CheckArtifactModification(
+	scope vfilter.Scope,
+	artifact *artifacts_proto.Artifact) error {
+
+	var ok bool
+	var err error
+
+	acl_manager, ok := artifacts.GetACLManager(scope)
+	if !ok {
+		return nil
+	}
+
+	switch strings.ToUpper(artifact.Type) {
+	case "CLIENT", "CLIENT_EVENT":
+		ok, err = acl_manager.CheckAccess(acls.ARTIFACT_WRITER)
+		if !ok {
+			return errors.New("Permission denied: ARTIFACT_WRITER")
+		}
+
+	case "SERVER", "SERVER_EVENT", "INTERNAL":
+		ok, err = acl_manager.CheckAccess(acls.SERVER_ARTIFACT_WRITER)
+		if !ok {
+			return errors.New("Permission denied: SERVER_ARTIFACT_WRITER")
+		}
+
+	default:
+		return errors.New("Unknown artifact type for permission check")
+	}
+
+	return err
+}
+
+// Check if the artifact can be added or modified.
+func CheckArtifactCollection(
+	scope vfilter.Scope,
+	artifact *artifacts_proto.Artifact) error {
+
+	var ok bool
+	var err error
+
+	acl_manager, ok := artifacts.GetACLManager(scope)
+	if !ok {
+		return nil
+	}
+
+	switch strings.ToUpper(artifact.Type) {
+	case "CLIENT", "CLIENT_EVENT":
+		ok, err = acl_manager.CheckAccess(acls.COLLECT_CLIENT)
+		if !ok {
+			return errors.New("Permission denied: COLLECT_CLIENT")
+		}
+
+	case "SERVER", "SERVER_EVENT", "INTERNAL":
+		ok, err = acl_manager.CheckAccess(acls.COLLECT_SERVER)
+		if !ok {
+			return errors.New("Permission denied: COLLECT_SERVER")
+		}
+
+	default:
+		return errors.New("Unknown artifact type for permission check")
+	}
+
+	return err
 }
 
 func init() {

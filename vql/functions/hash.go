@@ -28,7 +28,7 @@ import (
 	"sync"
 
 	"github.com/Velocidex/ordereddict"
-	glob "www.velocidex.com/golang/velociraptor/glob"
+	"www.velocidex.com/golang/velociraptor/accessors"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
 	"www.velocidex.com/golang/vfilter"
 	"www.velocidex.com/golang/vfilter/arg_parser"
@@ -53,11 +53,12 @@ type HashResult struct {
 }
 
 type HashFunctionArgs struct {
-	Path     string `vfilter:"required,field=path,doc=Path to open and hash."`
-	Accessor string `vfilter:"optional,field=accessor,doc=The accessor to use"`
+	Path       *accessors.OSPath `vfilter:"required,field=path,doc=Path to open and hash."`
+	Accessor   string            `vfilter:"optional,field=accessor,doc=The accessor to use"`
+	HashSelect []string          `vfilter:"optional,field=hashselect,doc=The hash function to use (MD5,SHA1,SHA256)"`
 }
 
-// The hash fuction calculates a hash of a file. It may be expensive
+// HashFunction calculates a hash of a file. It may be expensive
 // so we make it cancelllable.
 type HashFunction struct{}
 
@@ -68,10 +69,6 @@ func (self *HashFunction) Call(ctx context.Context,
 	err := arg_parser.ExtractArgsWithContext(ctx, scope, args, arg)
 	if err != nil {
 		scope.Log("hash: %v", err)
-		return vfilter.Null{}
-	}
-
-	if arg.Path == "" {
 		return vfilter.Null{}
 	}
 
@@ -86,23 +83,42 @@ func (self *HashFunction) Call(ctx context.Context,
 		return vfilter.Null{}
 	}
 
-	fs, err := glob.GetAccessor(arg.Accessor, scope)
+	fs, err := accessors.GetAccessor(arg.Accessor, scope)
 	if err != nil {
 		scope.Log("hash: %v", err)
 		return vfilter.Null{}
 	}
 
-	file, err := fs.Open(arg.Path)
+	file, err := fs.Open(arg.Path.String())
 	if err != nil {
-		scope.Log("hash %s: %v", arg.Path, err.Error())
+		scope.Log("hash %s: %v", arg.Path.String(), err.Error())
 		return vfilter.Null{}
 	}
 	defer file.Close()
 
-	result := HashResult{
-		md5:    md5.New(),
-		sha1:   sha1.New(),
-		sha256: sha256.New(),
+	result := HashResult{}
+
+	if arg.HashSelect == nil {
+		result = HashResult{
+			md5:    md5.New(),
+			sha1:   sha1.New(),
+			sha256: sha256.New(),
+		}
+	} else {
+		for _, hash_opt := range arg.HashSelect {
+			switch hash_opt {
+			case "sha256", "SHA256":
+				result.sha256 = sha256.New()
+			case "sha1", "SHA1":
+				result.sha1 = sha1.New()
+			case "md5", "MD5":
+				result.md5 = md5.New()
+			default:
+				scope.Log("hashselect option %s not recognized (should be md5, sha1, sha256)",
+					hash_opt)
+				return vfilter.Null{}
+			}
+		}
 	}
 
 	for {
@@ -116,26 +132,42 @@ func (self *HashFunction) Call(ctx context.Context,
 			// We are done!
 			if n == 0 || err == io.EOF {
 				if n == 0 {
-					result.MD5 = fmt.Sprintf(
-						"%x", result.md5.Sum(nil))
-					result.SHA1 = fmt.Sprintf(
-						"%x", result.sha1.Sum(nil))
-					result.SHA256 = fmt.Sprintf(
-						"%x", result.sha256.Sum(nil))
+					if result.md5 != nil {
+						result.MD5 = fmt.Sprintf(
+							"%x", result.md5.Sum(nil))
+					}
 
+					if result.sha1 != nil {
+						result.SHA1 = fmt.Sprintf(
+							"%x", result.sha1.Sum(nil))
+					}
+
+					if result.sha256 != nil {
+						result.SHA256 = fmt.Sprintf(
+							"%x", result.sha256.Sum(nil))
+					}
 					return result
 				}
 
 			} else if err != nil {
-				scope.Log(err.Error())
+				scope.Log("hash: %v", err)
 				return vfilter.Null{}
 			}
 
-			_, _ = result.md5.Write(buf[:n])
-			_, _ = result.sha1.Write(buf[:n])
-			_, _ = result.sha256.Write(buf[:n])
+			if result.md5 != nil {
+				_, _ = result.md5.Write(buf[:n])
+			}
 
-			vfilter.ChargeOp(scope)
+			if result.sha1 != nil {
+				_, _ = result.sha1.Write(buf[:n])
+			}
+
+			if result.sha256 != nil {
+				_, _ = result.sha256.Write(buf[:n])
+			}
+
+			// Charge an op for each buffer we read
+			scope.ChargeOp()
 		}
 	}
 }
@@ -145,6 +177,7 @@ func (self HashFunction) Info(scope vfilter.Scope, type_map *vfilter.TypeMap) *v
 		Name:    "hash",
 		Doc:     "Calculate the hash of a file.",
 		ArgType: type_map.AddType(scope, &HashFunctionArgs{}),
+		Version: 2,
 	}
 }
 

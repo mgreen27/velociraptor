@@ -10,13 +10,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/protobuf/ptypes/empty"
 	errors "github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	context "golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 	"www.velocidex.com/golang/velociraptor/acls"
 	api_proto "www.velocidex.com/golang/velociraptor/api/proto"
 	artifacts_proto "www.velocidex.com/golang/velociraptor/artifacts/proto"
@@ -31,12 +31,13 @@ import (
 	"www.velocidex.com/golang/velociraptor/reporting"
 	"www.velocidex.com/golang/velociraptor/services"
 	users "www.velocidex.com/golang/velociraptor/users"
+	"www.velocidex.com/golang/velociraptor/utils"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
 )
 
 func (self *ApiServer) ExportNotebook(
 	ctx context.Context,
-	in *api_proto.NotebookExportRequest) (*empty.Empty, error) {
+	in *api_proto.NotebookExportRequest) (*emptypb.Empty, error) {
 	return nil, errors.New("not implementated")
 }
 
@@ -92,6 +93,11 @@ func (self *ApiServer) GetNotebooks(
 		// An error here just means there are no AvailableDownloads.
 		notebook.AvailableDownloads, _ = getAvailableDownloadFiles(self.config,
 			notebook_path_manager.HtmlExport().Dir())
+
+		if in.IncludeUploads {
+			notebook.AvailableUploads, _ = getAvailableUploadFiles(self.config,
+				notebook_path_manager)
+		}
 
 		notebook.Timelines = getAvailableTimelines(
 			self.config, notebook_path_manager)
@@ -179,7 +185,8 @@ func (self *ApiServer) NewNotebook(
 
 	// Allow hunt notebooks to be created with a specified hunt ID.
 	if !strings.HasPrefix(in.NotebookId, "N.H.") &&
-		!strings.HasPrefix(in.NotebookId, "N.F.") {
+		!strings.HasPrefix(in.NotebookId, "N.F.") &&
+		!strings.HasPrefix(in.NotebookId, "N.E.") {
 		in.NotebookId = NewNotebookId()
 	}
 
@@ -228,6 +235,8 @@ func (self *ApiServer) createInitialNotebook(
 		CurrentlyEditing: true,
 	}}
 
+	// Figure out what type of content to create depending on the type
+	// of the notebook
 	if notebook_metadata.Context != nil {
 		if notebook_metadata.Context.HuntId != "" {
 			new_cells = getCellsForHunt(ctx, self.config,
@@ -237,6 +246,11 @@ func (self *ApiServer) createInitialNotebook(
 			new_cells = getCellsForFlow(ctx, self.config,
 				notebook_metadata.Context.ClientId,
 				notebook_metadata.Context.FlowId, notebook_metadata)
+		} else if notebook_metadata.Context.EventArtifact != "" &&
+			notebook_metadata.Context.ClientId != "" {
+			new_cells = getCellsForEvents(ctx, self.config,
+				notebook_metadata.Context.ClientId,
+				notebook_metadata.Context.EventArtifact, notebook_metadata)
 		}
 	}
 
@@ -257,6 +271,113 @@ func (self *ApiServer) createInitialNotebook(
 		}
 	}
 	return nil
+}
+
+func getCellsForEvents(ctx context.Context,
+	config_obj *config_proto.Config,
+	client_id string, artifact_name string,
+	notebook_metadata *api_proto.NotebookMetadata) []*api_proto.NotebookCellRequest {
+
+	manager, err := services.GetRepositoryManager()
+	if err != nil {
+		return nil
+	}
+
+	repository, err := manager.GetGlobalRepository(config_obj)
+	if err != nil {
+		return nil
+	}
+
+	result := getCustomCells(config_obj, repository,
+		artifact_name, notebook_metadata)
+
+	// If there are no custom cells, add the default cell.
+	if len(result) == 0 {
+		// Start the event display 1 day ago.
+		start_time := time.Now().AddDate(0, 0, -1).UTC().Format(time.RFC3339)
+		if notebook_metadata.Context.StartTime > 0 {
+			start_time = utils.ParseTimeFromInt64(
+				notebook_metadata.Context.StartTime).UTC().Format(time.RFC3339)
+		}
+
+		end_time := time.Now().UTC().Format(time.RFC3339)
+		if notebook_metadata.Context.EndTime > 0 {
+			end_time = utils.ParseTimeFromInt64(
+				notebook_metadata.Context.EndTime).UTC().Format(time.RFC3339)
+		}
+
+		result = append(result, &api_proto.NotebookCellRequest{
+			Type: "VQL",
+
+			// This env dict overlays on top of the global
+			// notebook env where we can find hunt_id, flow_id
+			// etc.
+			Env: []*api_proto.Env{{
+				Key: "ArtifactName", Value: artifact_name,
+			}},
+			Input: fmt.Sprintf(`/*
+# Events from %v
+*/
+LET StartTime <= "%s"
+LET EndTime <= "%s"
+
+SELECT *, timestamp(epoch=_ts) AS ServerTime
+ FROM source(start_time=StartTime, end_time=EndTime)
+LIMIT 50
+`, artifact_name, start_time, end_time),
+		})
+	}
+
+	return result
+}
+
+func getCustomCells(
+	config_obj *config_proto.Config,
+	repository services.Repository,
+	source string,
+	notebook_metadata *api_proto.NotebookMetadata) []*api_proto.NotebookCellRequest {
+	var result []*api_proto.NotebookCellRequest
+
+	// Check if the artifact has custom notebook cells defined.
+	artifact_source, pres := repository.GetSource(config_obj, source)
+	if !pres {
+		return nil
+	}
+	env := []*api_proto.Env{{
+		Key: "ArtifactName", Value: source,
+	}}
+
+	// If the artifact_source defines a notebook, let it do its own thing.
+	for _, cell := range artifact_source.Notebook {
+		for _, i := range cell.Env {
+			env = append(env, &api_proto.Env{
+				Key:   i.Key,
+				Value: i.Value,
+			})
+		}
+
+		request := &api_proto.NotebookCellRequest{
+			Type:  cell.Type,
+			Env:   env,
+			Input: cell.Template}
+
+		switch strings.ToLower(cell.Type) {
+		case "vql", "md", "markdown":
+			result = append(result, request)
+
+		case "vql_suggestion":
+			request.Type = "vql"
+			request.Name = cell.Name
+			notebook_metadata.Suggestions = append(
+				notebook_metadata.Suggestions, request)
+
+		default:
+			logger := logging.GetLogger(config_obj, &logging.GUIComponent)
+			logger.Error("getDefaultCellsForSources: Cell type %v invalid",
+				cell.Type)
+		}
+	}
+	return result
 }
 
 func getCellsForHunt(ctx context.Context,
@@ -281,6 +402,53 @@ func getCellsForHunt(ctx context.Context,
 			return nil
 		}
 	}
+
+	// Add a default hunt suggestion
+	notebook_metadata.Suggestions = append(notebook_metadata.Suggestions,
+		&api_proto.NotebookCellRequest{
+			Name: "Hunt Progress",
+			Type: "vql",
+			Input: `
+
+LET ColumnTypes <= dict(
+   ClientId="client_id",
+   FlowId="flow",
+   StartedTime="timestamp"
+)
+
+/*
+# Flows with ERROR status
+*/
+SELECT ClientId, FlowId, Flow.start_time As StartedTime,
+       Flow.state AS FlowState, Flow.status as FlowStatus,
+       Flow.execution_duration as Duration,
+       Flow.total_collected_bytes as TotalBytes,
+       Flow.total_collected_rows as TotalRows
+FROM hunt_flows(hunt_id=HuntId)
+WHERE FlowState =~ 'ERROR'
+
+/*
+## Flows with RUNNING status
+*/
+SELECT ClientId, FlowId, Flow.start_time As StartedTime,
+       Flow.state AS FlowState, Flow.status as FlowStatus,
+       Flow.execution_duration as Duration,
+       Flow.total_collected_bytes as TotalBytes,
+       Flow.total_collected_rows as TotalRows
+FROM hunt_flows(hunt_id=HuntId)
+WHERE FlowState =~ 'RUNNING'
+
+/*
+## Flows with FINISHED status
+*/
+SELECT ClientId, FlowId, Flow.start_time As StartedTime,
+       Flow.state AS FlowState, Flow.status as FlowStatus,
+       Flow.execution_duration as Duration,
+       Flow.total_collected_bytes as TotalBytes,
+       Flow.total_collected_rows as TotalRows
+FROM hunt_flows(hunt_id=HuntId)
+WHERE FlowState =~ 'Finished'
+`})
 
 	return getDefaultCellsForSources(config_obj, sources, notebook_metadata)
 }
@@ -327,42 +495,29 @@ func getDefaultCellsForSources(
 				artifact.ColumnTypes...)
 		}
 
-		// Check if the artifact has custom notebook cells defined.
-		artifact_source, pres := repository.GetSource(config_obj, source)
-		if !pres {
-			continue
-		}
-		env := []*api_proto.Env{{
-			Key: "ArtifactName", Value: source,
-		}}
+		new_cells := getCustomCells(config_obj, repository,
+			source, notebook_metadata)
+		result = append(result, new_cells...)
 
-		// If the artifact_source defines a notebook, let it do its own thing.
-		if len(artifact_source.Notebook) > 0 {
-			for _, cell := range artifact_source.Notebook {
-				for _, i := range cell.Env {
-					env = append(env, &api_proto.Env{
-						Key:   i.Key,
-						Value: i.Value,
-					})
-				}
-
-				result = append(result, &api_proto.NotebookCellRequest{
-					Type:  cell.Type,
-					Env:   env,
-					Input: cell.Template})
-			}
-
-		} else {
-			// Otherwise build a default notebook.
+		// Build a default empty notebook that shows off all the
+		// results if there are no custom cells.
+		if len(new_cells) == 0 {
 			result = append(result, &api_proto.NotebookCellRequest{
-				Type:  "Markdown",
-				Env:   env,
-				Input: "# " + source})
+				Type: "VQL",
 
-			result = append(result, &api_proto.NotebookCellRequest{
-				Type:  "VQL",
-				Env:   env,
-				Input: "\nSELECT * FROM source()\nLIMIT 50\n",
+				// This env dict overlays on top of the global
+				// notebook env where we can find hunt_id, flow_id
+				// etc.
+				Env: []*api_proto.Env{{
+					Key: "ArtifactName", Value: source,
+				}},
+				Input: fmt.Sprintf(`
+/*
+# %v
+*/
+SELECT * FROM source(artifact=%q)
+LIMIT 50
+`, source, source),
 			})
 		}
 	}
@@ -417,12 +572,13 @@ func (self *ApiServer) NewNotebookCell(
 
 	for _, cell_md := range notebook.CellMetadata {
 		if cell_md.CellId == in.CellId {
+			// New cell goes above existing cell.
 			new_cell_md = append(new_cell_md, &api_proto.NotebookCell{
-				CellId:    cell_md.CellId,
+				CellId:    notebook.LatestCellId,
 				Timestamp: time.Now().Unix(),
 			})
 			new_cell_md = append(new_cell_md, &api_proto.NotebookCell{
-				CellId:    notebook.LatestCellId,
+				CellId:    cell_md.CellId,
 				Timestamp: time.Now().Unix(),
 			})
 			added = true
@@ -812,7 +968,7 @@ func (self *ApiServer) updateNotebookCell(
 
 func (self *ApiServer) CancelNotebookCell(
 	ctx context.Context,
-	in *api_proto.NotebookCellRequest) (*empty.Empty, error) {
+	in *api_proto.NotebookCellRequest) (*emptypb.Empty, error) {
 
 	defer Instrument("CancelNotebookCell")()
 
@@ -853,13 +1009,15 @@ func (self *ApiServer) CancelNotebookCell(
 	}
 
 	notebook_cell.Calculating = false
+	// Make sure we write the cancel message ASAP
 	err = db.SetSubject(self.config, notebook_cell_path_manager.Path(),
 		notebook_cell)
 	if err != nil {
 		return nil, err
 	}
 
-	return &empty.Empty{}, services.GetNotifier().NotifyListener(self.config, in.CellId)
+	return &emptypb.Empty{}, services.GetNotifier().NotifyListener(
+		self.config, in.CellId, "CancelNotebookCell")
 }
 
 func (self *ApiServer) UploadNotebookAttachment(
@@ -909,7 +1067,7 @@ func (self *ApiServer) UploadNotebookAttachment(
 
 func (self *ApiServer) CreateNotebookDownloadFile(
 	ctx context.Context,
-	in *api_proto.NotebookExportRequest) (*empty.Empty, error) {
+	in *api_proto.NotebookExportRequest) (*emptypb.Empty, error) {
 
 	defer Instrument("CreateNotebookDownloadFile")()
 
@@ -928,10 +1086,10 @@ func (self *ApiServer) CreateNotebookDownloadFile(
 
 	switch in.Type {
 	case "zip":
-		return &empty.Empty{}, exportZipNotebook(
+		return &emptypb.Empty{}, exportZipNotebook(
 			self.config, in.NotebookId, user_record.Name)
 	default:
-		return &empty.Empty{}, exportHTMLNotebook(
+		return &emptypb.Empty{}, exportHTMLNotebook(
 			self.config, in.NotebookId, user_record.Name)
 	}
 }
@@ -1103,8 +1261,36 @@ func getAvailableDownloadFiles(config_obj *config_proto.Config,
 			Type:     api.GetExtensionForFilestore(ps),
 			Path:     ps.AsClientPath(),
 			Size:     uint64(item.Size()),
-			Date:     fmt.Sprintf("%v", item.ModTime()),
+			Date:     item.ModTime().UTC().Format(time.RFC3339),
 			Complete: is_complete(ps.Base()),
+		})
+	}
+
+	return result, nil
+}
+
+func getAvailableUploadFiles(config_obj *config_proto.Config,
+	notebook_path_manager *paths.NotebookPathManager) (
+	*api_proto.AvailableDownloads, error) {
+	result := &api_proto.AvailableDownloads{}
+
+	file_store_factory := file_store.GetFileStore(config_obj)
+	files, err := file_store_factory.ListDirectory(
+		notebook_path_manager.UploadsDir())
+	if err != nil {
+		return nil, err
+	}
+
+	for _, item := range files {
+		ps := item.PathSpec()
+
+		result.Files = append(result.Files, &api_proto.AvailableDownloadFile{
+			Name:     item.Name(),
+			Type:     api.GetExtensionForFilestore(ps),
+			Path:     ps.AsClientPath(),
+			Size:     uint64(item.Size()),
+			Date:     item.ModTime().UTC().Format(time.RFC3339),
+			Complete: true,
 		})
 	}
 
@@ -1168,6 +1354,9 @@ func updateCellContents(
 	}()
 
 	switch cell_type {
+
+	case "vql_suggestion":
+		// noop - these cells will be created by the user on demand.
 
 	case "markdown", "md":
 		// A Markdown cell just feeds directly into the

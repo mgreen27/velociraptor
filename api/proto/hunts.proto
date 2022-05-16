@@ -79,6 +79,8 @@ message Hunt {
             friendly_name: "Hunt ID",
         }];
 
+    int64 version = 20;
+
     uint64 create_time = 2 [(sem_type) = {
             description: "When this hunt was created.",
             friendly_name: "Creation Time",
@@ -139,6 +141,12 @@ message Hunt {
     State state = 8 [(sem_type) = {
             description: "This is state of the hunt. This field is manupulated by the GUI."
         }];
+}
+
+message HuntEstimateRequest {
+    // Only show clients that were active this many seconds ago.
+    uint64 last_active = 1;
+    HuntCondition condition = 4;
 }
 
 message ListHuntsRequest {
