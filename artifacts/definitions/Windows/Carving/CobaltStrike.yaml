@@ -1,4 +1,4 @@
-name: Windows.Carving.CobaltStrike2
+name: Windows.Carving.CobaltStrike
 author: Matt Green - @mgreen27
 description: |
   This artifact extracts cobalt strike configuration from a byte stream, process
