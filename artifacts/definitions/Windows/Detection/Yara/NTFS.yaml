@@ -7,7 +7,6 @@ description: |
   There are 3 kinds of Yara rules that can be deployed:
 
   1. Url link to a yara rule.
-  2. Shorthand yara in the format `wide nocase ascii:string1,string2,string3`.
   3. or a Standard Yara rule attached as a parameter.
 
   Only one method of Yara will be applied and search order is as above.
@@ -68,10 +67,10 @@ parameters:
              uint32(uint32(0x3C)) == 0x00004550
         }
   - name: NumberOfHits
-    description: THis artifact will stop by default at one hit. This setting allows additional hits
+    description: This artifact will stop by default at one hit. This setting allows additional hits
     default: 1
-    type: int64
-  - name: HitContext
+    type: int
+  - name: ContextBytes
     description: Include this amount of bytes around hit as context.
     default: 0
     type: int
@@ -86,9 +85,7 @@ sources:
       LET yara_rules = YaraUrl || YaraRule
 
       -- first find all matching files mft
-      LET files = SELECT
-            OSPath, IsDir
-        FROM Artifact.Windows.NTFS.MFT(
+      LET files = SELECT * FROM Artifact.Windows.NTFS.MFT(
             MFTDrive=DriveLetter, AllDrives=AllDrives,
             PathRegex=PathRegex, SizeMax=SizeMax, SizeMin=SizeMin)
         WHERE NOT IsDir
@@ -115,12 +112,12 @@ sources:
                     Rule, Tags, Meta,
                     str(str=String.Data) AS HitContext,
                     String.Offset AS HitOffset
-                FROM yara(rules=yara_rules, files=OSPath, context=HitContext,number=NumberOfHits)
+                FROM yara(rules=yara_rules, files=OSPath, context=ContextBytes,number=NumberOfHits)
             })
 
       -- upload files that have hit
       LET upload_hits=SELECT *,
-            upload(file=FullPath) AS Upload
+            upload(file=OSPath) AS Upload
         FROM hits
 
       -- return rows
