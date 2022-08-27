@@ -15,20 +15,6 @@ Parameters:
           accessor: "auto"
           prefix: "/"
           path_type: "windows"
-      - type: mount
-        from:
-          accessor: zip
-          path_type: linux
-          prefix: |
-            {
-              "DelegateAccessor": "scope",
-              "DelegatePath": "Content2",
-              "Path": "/"
-            }
-        on:
-          accessor: "auto"
-          prefix: "/"
-          path_type: "windows"
 
 Queries:
   # tests embedded pe in data section parsing
