@@ -74,7 +74,7 @@ parameters:
     description: THis artifact will stop by default at one hit. This setting allows additional hits
     default: 1
     type: int64
-  - name: HitContext
+  - name: ContextBytes
     description: Include this amount of bytes around hit as context.
     default: 0
     type: int
@@ -119,7 +119,7 @@ sources:
                     Rule, Tags, Meta,
                     str(str=String.Data) AS HitContext,
                     String.Offset AS HitOffset
-                FROM yara(rules=yara_rules, files=OSPath, context=HitContext,number=NumberOfHits)
+                FROM yara(rules=yara_rules, files=OSPath, context=ContextBytes,number=NumberOfHits)
             })
 
       -- upload files that have hit
