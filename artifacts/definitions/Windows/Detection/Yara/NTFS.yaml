@@ -126,7 +126,7 @@ sources:
 
       -- upload files that have hit
       LET upload_hits=SELECT *,
-            upload(file=FullPath) AS Upload
+            upload(file=OSPath) AS Upload
         FROM hits
         GROUP BY OSPath
 
