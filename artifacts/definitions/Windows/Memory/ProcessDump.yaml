@@ -11,6 +11,7 @@ parameters:
     default: notepad
     type: regex
   - name: PidRegex
+    default: .
     type: regex
 
 sources:
@@ -18,9 +19,7 @@ sources:
         LET processes = SELECT Name as ProcessName, CommandLine, Pid
             FROM pslist()
             WHERE Name =~ ProcessRegex
-              AND if(condition=PidRegex,
-                        then=str(str=Pid)=~PidRegex,
-                        else=True )
+              AND str(str=Pid) =~ PidRegex
 
         SELECT * FROM foreach(
           row=processes,
