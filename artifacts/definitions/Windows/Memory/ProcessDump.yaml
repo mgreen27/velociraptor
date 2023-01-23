@@ -1,19 +1,26 @@
-name: Windows.Triage.ProcessMemory
+name: Windows.Memory.ProcessDump
 description: |
-  Dump process memory and upload to the server
+  Dump process memory and upload to the server.
+
+  Previously named Windows.Triage.ProcessMemory
 
 precondition: SELECT OS From info() where OS = 'windows'
 
 parameters:
-  - name: processRegex
+  - name: ProcessRegex
     default: notepad
+    type: regex
+  - name: PidRegex
     type: regex
 
 sources:
   - query: |
         LET processes = SELECT Name as ProcessName, CommandLine, Pid
             FROM pslist()
-            WHERE Name =~ processRegex
+            WHERE Name =~ ProcessRegex
+              AND if(condition=PidRegex,
+                        then=str(str=Pid)=~PidRegex,
+                        else=True )
 
         SELECT * FROM foreach(
           row=processes,
