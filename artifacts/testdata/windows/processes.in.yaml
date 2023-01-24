@@ -1,8 +1,5 @@
 Queries:
   # Make sure we can parse the environment strings for the running process
   - SELECT *
-    FROM Artifact.Windows.Forensics.ProcessInfo()
-    LIMIT 1
-  - SELECT *
     FROM Artifact.Windows.Memory.ProcessInfo()
     LIMIT 1
