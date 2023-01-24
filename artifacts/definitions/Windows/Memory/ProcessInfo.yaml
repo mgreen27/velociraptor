@@ -88,9 +88,9 @@ sources:
         SELECT * FROM foreach(row={
             SELECT Pid FROM pslist()
             WHERE Name =~ ProcessNameRegex
-              AND str(str=Pid) =~ PidRegex
-              AND ImagePathName =~ ImagePathRegex
-              AND CommandLine =~ CommandLineRegex
+            --  AND str(str=Pid) =~ PidRegex
+            --  AND ImagePathName =~ ImagePathRegex
+            --  AND CommandLine =~ CommandLineRegex
         }, query={
             SELECT * FROM Calculate(PID=Pid)
         })
