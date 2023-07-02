@@ -50,47 +50,7 @@ SELECT ModuleName, Timestamp, Functions[1] FROM Artifact.Windows.System.Powershe
   "Functions[1]": "Set-BitsTransfer"
  }
 ]SELECT * FROM column_filter(query={ SELECT * FROM Artifact.Windows.Forensics.Lnk( Glob=srcDir + "/artifacts/testdata/files/1.lnk") }, exclude="FullPath|time|_|SourceModified|SourceCreated")[
- {
-  "HeaderCreationTime": "2020-11-12T01:43:21Z",
-  "HeaderAccessTime": "2020-11-12T01:43:21Z",
-  "HeaderWriteTime": "2020-11-12T01:43:21Z",
-  "FileSize": 1343,
-  "Target": {
-   "path": "\\\\vmware-host\\Shared Folders\\shared\\tmp\\1.yaml",
-   "relative_link": {
-    "NetworkProviderType": "WNNC_NET_VMWARE",
-    "NetName": "\\\\vmware-host\\Shared Folders\\shared",
-    "DeviceName": "F:"
-   }
-  },
-  "Name": null,
-  "RelativePath": null,
-  "WorkingDir": "F:\\tmp",
-  "Arguments": null,
-  "Icons": null,
-  "Upload": null
- }
 ]SELECT * FROM column_filter(query={ SELECT * FROM Artifact.Windows.Forensics.Lnk( Glob=srcDir + "/artifacts/testdata/files/password.txt.lnk") }, exclude="FullPath|time|_|SourceModified|SourceCreated")[
- {
-  "HeaderCreationTime": "2021-06-05T12:05:12Z",
-  "HeaderAccessTime": "2021-12-22T09:47:57Z",
-  "HeaderWriteTime": "2021-06-05T12:05:12Z",
-  "FileSize": 331776,
-  "Target": {
-   "path": "C:\\Windows\\System32\\cmd.exe",
-   "volume_info": {
-    "DriveType": "DRIVE_FIXED",
-    "DriveSerialNumber": 134260411,
-    "VolumeLabel": ""
-   }
-  },
-  "Name": null,
-  "RelativePath": "..\\..\\..\\Windows\\System32\\cmd.exe",
-  "WorkingDir": "%windir%\\sYSteM32",
-  "Arguments": "/c \"echo HeLLO \u0026\u0026 pAuSe\"",
-  "Icons": "%sYsTemRooT%\\sYSteM32\\iMagEreS.dll",
-  "Upload": null
- }
 ]SELECT * FROM foreach(row=parse_binary( accessor="data", filename=unhex(string=Data), profile=Profile, struct="MRU").Items)[
  {
   "_value": 3

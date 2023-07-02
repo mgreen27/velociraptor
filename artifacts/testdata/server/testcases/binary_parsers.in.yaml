@@ -19,6 +19,7 @@ Queries:
   # Check the lnk parser
   - SELECT ShellLinkHeader,LinkInfo,LinkTarget,StringData 
     FROM Artifact.Windows.Forensics.Lnk(TargetGlob=srcDir + "/artifacts/testdata/files/1.lnk")
+    
   - SELECT ShellLinkHeader,LinkInfo,LinkTarget,StringData 
     FROM Artifact.Windows.Forensics.Lnk(TargetGlob=srcDir + "/artifacts/testdata/files/password.txt.lnk")
 
