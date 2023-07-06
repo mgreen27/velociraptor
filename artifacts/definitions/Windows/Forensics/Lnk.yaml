@@ -570,7 +570,7 @@ export: |
             ["StringData", 2, "String", {
                 "encoding": "utf16",
                 "length": "x=>x.Size",
-                "max_length": "x=>x.Size",
+                "max_length": 10000,
                 "term": "",
             }],
         ]],
@@ -581,7 +581,7 @@ export: |
             ["StringData", 2, "String", {
                 "encoding": "utf16",
                 "length": "x=>x.Size",
-                "max_length": "x=>x.Size",
+                "max_length": 10000,
                 "term": "",
             }],
         ]],
@@ -592,7 +592,7 @@ export: |
             ["StringData", 2, "String", {
                 "encoding": "utf16",
                 "length": "x=>x.Size",
-                "max_length": "x=>x.Size",
+                "max_length": 10000,
                 "term": "",
             }],
         ]],
@@ -600,13 +600,12 @@ export: |
             ["Offset", 0, "Value", {"value": "x=>x.StartOf"}],
             ["Characters", 0, "uint16"],
             ["Size", 0, "Value", {"value": "x=>x.Characters * 2"}],
+            ["SizeType", 0, "Value", {"value": "x=>format(format='%T',args=x.Size)"}],
             ["StringData", 2, "String", {
                 "encoding": "utf16",
-                #"length": "x=>x.Size",
-                #"max_length": "x=>x.Size",
-                "length": "x=>x.Characters * 2",
-                "max_length": "x=>x.Characters * 2",
-                "term": "NOTERM-YOLO",
+                "length": "x=>x.Size",
+                "max_length": 10000,
+                "term": "",
             }],
         ]],
         ["IconLocation", "x=>x.Size + 2", [
@@ -616,7 +615,7 @@ export: |
             ["StringData", 2, "String", {
                 "encoding": "utf16",
                 "length": "x=>x.Size",
-                "max_length": "x=>x.Size",
+                "max_length": 10000,
                 "term": "",
             }],
         ]],
@@ -857,7 +856,8 @@ export: |
             ["__DataBlockSize",0,"uint32"],
             ["LayerName", 8, "String", { 
                 "encoding": "utf16",
-                "max_length": "x=>x.__DataBlockSize - 8"
+                "length": "x=>x.__DataBlockSize - 8",
+                "max_length": 10000
                 }],
             ["DataValue",0,"Value",{"value":"x=>x.LayerName"}],
         ]],
