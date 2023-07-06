@@ -1,4 +1,4 @@
-name: Rapid7.Windows.Forensics.Lnk
+name: Windows.Forensics.Lnk
 author: Matt Green - @mgreen27
 description: |
   This artiact parses LNK shortcut files.
