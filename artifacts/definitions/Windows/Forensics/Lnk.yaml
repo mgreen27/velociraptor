@@ -1,23 +1,18 @@
-name: Windows.Forensics.Lnk
+name: Rapid7.Windows.Forensics.Lnk
 author: Matt Green - @mgreen27
 description: |
   This artiact parses LNK shortcut files.
   
-  A LNK file is a type of Shell Item that serves as a shortcut or 
-reference to a 
-  specific file, folder, or application. It contains metadata and 
-information 
+  A LNK file is a type of Shell Item that serves as a shortcut or reference to a 
+  specific file, folder, or application. It contains metadata and information 
   about the accessed file or location and is a valuable forensic artifact. 
-  LNK files can be automatically created by the Windows operating system 
-when a 
-  user accesses a file from a supported application or manually created by 
-the user.
+  LNK files can be automatically created by the Windows operating system when a 
+  user accesses a file from a supported application or manually created by the user.
   
   This artifact has several configurable options:
   
   - TargetGlob: glob targeting. Default targets *.lnk files in user path.
-  - IOCRegex: Regex search on key fields: StringData, TrackerData and 
-PropertyStore.
+  - IOCRegex: Regex search on key fields: StringData, TrackerData and PropertyStore.
   - IgnoreRegex: Ignore regex filter on key fields.
   - UploadLnk: uploads lnk hits.
   
@@ -38,8 +33,7 @@ PropertyStore.
 
 
 reference:
-  - 
-https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-shllink
+  - https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-shllink
 
 parameters:
   - name: TargetGlob
@@ -218,8 +212,7 @@ export: |
             
         }],
         
-        # The LinkTargetIDList only exists if the Link Flag is set 
-otherwise it is empty.
+        # The LinkTargetIDList only exists if the Link Flag is set otherwise it is empty.
         ["LinkTargetIDList", "x=>x.HeaderSize", "Union", {
             "selector": "x=>x.LinkFlags =~ 'HasLinkTargetIDList'",
             "choices": {
@@ -346,24 +339,18 @@ otherwise it is empty.
         ["__CommonNetworkRelativeLinkOffset", 20, "uint32"],
         ["__CommonPathSuffixOffset", 24, "uint32"],
         ["__LocalBasePath", "x=>x.__LocalBasePathOffset", "String", {}],
-        ["__CommonNetworkRelativePath", 
-"x=>x.__CommonNetworkRelativeLinkOffset", "String"],
+        ["__CommonNetworkRelativePath", "x=>x.__CommonNetworkRelativeLinkOffset", "String"],
         ["__CommonPathSuffix", "x=>x.__CommonPathSuffixOffset", "String"],
         ["__VolumeID", "x=>x.__VolumeIDOffset", "VolumeID"],
-        ["__CommonNetworkRelativeLink", 
-"x=>x.__CommonNetworkRelativeLinkOffset", "CommonNetworkRelativeLink"],
-        ["Target", 0, "Value", { # Depending on the LinkInfoFlags this 
-struct needs to be interpreted differently.
+        ["__CommonNetworkRelativeLink", "x=>x.__CommonNetworkRelativeLinkOffset", "CommonNetworkRelativeLink"],
+        ["Target", 0, "Value", { # Depending on the LinkInfoFlags this struct needs to be interpreted differently.
             "value": '
-               x=>if(condition=x.LinkInfoFlags =~ 
-"VolumeIDAndLocalBasePath",
+               x=>if(condition=x.LinkInfoFlags =~ "VolumeIDAndLocalBasePath",
                      then=dict(Path=x.__LocalBasePath,
                                VolumeInfo=x.__VolumeID),
                      else=dict(Path=format(format="%v\\%v",
-                               
-args=[x.__CommonNetworkRelativeLink.NetName, x.__CommonPathSuffix]),
-                               RelativeLink=x.__CommonNetworkRelativeLink) 
-)'
+                               args=[x.__CommonNetworkRelativeLink.NetName, x.__CommonPathSuffix]),
+                               RelativeLink=x.__CommonNetworkRelativeLink) )'
         }]
       ]],
       
@@ -428,17 +415,13 @@ args=[x.__CommonNetworkRelativeLink.NetName, x.__CommonPathSuffix]),
         ["__DeviceNameOffsetUnicode", 24, "uint32"],
         ["__NetNameAscii", "x=>x.__NetNameOffset", "String"],
         ["__DeviceNameAscii", "x=>x.__DeviceNameOffset", "String"],
-        ["__NetNameUnicode", "x=>x.__NetNameOffsetUnicode", "String", 
-{"encoding": "utf16"}],
-        ["__DeviceNameUnicode", "x=>x.__DeviceNameOffsetUnicode", 
-"String", {"encoding": "utf16"}],
+        ["__NetNameUnicode", "x=>x.__NetNameOffsetUnicode", "String", {"encoding": "utf16"}],
+        ["__DeviceNameUnicode", "x=>x.__DeviceNameOffsetUnicode", "String", {"encoding": "utf16"}],
         ["NetName", 0, "Value", {
-            "value": "x=>if(condition=x.__NetNameOffset, 
-then=x.__NetNameAscii, else=x.__NetNameUnicode)"
+            "value": "x=>if(condition=x.__NetNameOffset, then=x.__NetNameAscii, else=x.__NetNameUnicode)"
         }],
         ["DeviceName", 0, "Value", {
-            "value": "x=>if(condition=x.__DeviceNameOffset, 
-then=x.__DeviceNameAscii, else=x.__DeviceNameUnicode)"
+            "value": "x=>if(condition=x.__DeviceNameOffset, then=x.__DeviceNameAscii, else=x.__DeviceNameUnicode)"
         }]
       ]],
 
@@ -461,8 +444,7 @@ then=x.__DeviceNameAscii, else=x.__DeviceNameUnicode)"
         ["__VolumeLabelOffset", 12, "uint32"],
         ["__VolumeLabelOffsetUnicode", 16, "uint32"],
         ["__VolumeLabelAscii", "x=>x.__VolumeLabelOffset", "String"],
-        ["__VolumeLabelUnicode", "x=>x.__VolumeLabelOffsetUnicode", 
-"String", {"encoding": "utf16"}],
+        ["__VolumeLabelUnicode", "x=>x.__VolumeLabelOffsetUnicode", "String", {"encoding": "utf16"}],
         ["VolumeLabel", 0, "Value", {
             "value": 'x=>if(condition=x.__VolumeLabelOffset,
                then=x.__VolumeLabelAscii, else=x.__VolumeLabelUnicode)'
@@ -474,8 +456,7 @@ then=x.__DeviceNameAscii, else=x.__DeviceNameUnicode)"
          ["__Name", 3, "String"],
          # Name is only valid if the first bit is set.
          ["Name", 3, "Value", {
-             "value": "x=>if(condition=x.ParentOf.Subtype, then=x.__Name, 
-else='')",
+             "value": "x=>if(condition=x.ParentOf.Subtype, then=x.__Name, else='')",
          }],
          ["Description", 0, "Value", {
             "value": 'x=>dict(
@@ -512,8 +493,7 @@ else='')",
         ["LastModificationTime", 8, "FatTimestamp"],
         ["ShortName", 14, "String"],
 
-        # Variable length search for the extension signature from the 
-start of the struct.
+        # Variable length search for the extension signature from the start of the struct.
         ["__pre", 0, "String", {
             "term_hex": "0400efbe"
         }],
@@ -523,8 +503,7 @@ start of the struct.
 
             # Extension starts 4 bytes before the tag
             ["Extension", "x=>len(list=x.__pre) - 4", "Union", {
-                "selector": "x=>format(format='%#x', 
-args=x.__ExtensionTag)",
+                "selector": "x=>format(format='%#x', args=x.__ExtensionTag)",
                 "choices": {
                     "0xbeef0004": "Beef0004",
                 }
@@ -534,12 +513,9 @@ args=x.__ExtensionTag)",
             ["Description", 0, "Value", {
                 "value": 'x=>dict(
                     Type=x.SubType,
-                    Modified=if(condition=x.__LastModificationTime, 
-then=x.LastModificationTime),
-                    LastAccessed=if(condition=x.Extension.__LastAccessed, 
-then=x.Extension.LastAccessed),
-                    CreateDate=if(condition=x.Extension.__CreateDate, 
-then=x.Extension.CreateDate),
+                    Modified=if(condition=x.__LastModificationTime, then=x.LastModificationTime),
+                    LastAccessed=if(condition=x.Extension.__LastAccessed, then=x.Extension.LastAccessed),
+                    CreateDate=if(condition=x.Extension.__CreateDate, then=x.Extension.CreateDate),
                     ShortName=x.ShortName,
                     LongName=x.Extension.LongName,
                     MFTID=x.Extension.MFTReference.MFTID,
@@ -578,18 +554,12 @@ then=x.Extension.CreateDate),
         ]],
         
         ["StringData",0,[
-            ["TargetPath",0,"Value",{ "value":"x=> 
-x.ParentOf.LinkInfo.Target.Path"}],
-            ["Name",0,"Value",{ "value":"x=> 
-x.ParentOf.__Name.StringData"}],
-            ["RelativePath",0,"Value",{ "value":"x=> 
-x.ParentOf.__RelativePath.StringData"}],
-            ["WorkingDir",0,"Value",{ "value":"x=> 
-x.ParentOf__WorkingDir.StringData"}],
-            ["Arguments",0,"Value",{ "value":"x=> 
-x.ParentOf.__Arguments.StringData"}],
-            ["IconLocation",0,"Value",{ "value":"x=> 
-x.ParentOf.__IconLocation.StringData"}],
+            ["TargetPath",0,"Value",{ "value":"x=> x.ParentOf.LinkInfo.Target.Path"}],
+            ["Name",0,"Value",{ "value":"x=> x.ParentOf.__Name.StringData"}],
+            ["RelativePath",0,"Value",{ "value":"x=> x.ParentOf.__RelativePath.StringData"}],
+            ["WorkingDir",0,"Value",{ "value":"x=> x.ParentOf__WorkingDir.StringData"}],
+            ["Arguments",0,"Value",{ "value":"x=> x.ParentOf.__Arguments"}],
+            ["IconLocation",0,"Value",{ "value":"x=> x.ParentOf.__IconLocation.StringData"}],
         ]],
         
         ## StringDataBlock structs
@@ -632,9 +602,11 @@ x.ParentOf.__IconLocation.StringData"}],
             ["Size", 0, "Value", {"value": "x=>x.Characters * 2"}],
             ["StringData", 2, "String", {
                 "encoding": "utf16",
-                "length": "x=>x.Size",
-                "max_length": "x=>x.Size",
-                "term": "",
+                #"length": "x=>x.Size",
+                #"max_length": "x=>x.Size",
+                "length": "x=>x.Characters * 2",
+                "max_length": "x=>x.Characters * 2",
+                "term": "NOTERM-YOLO",
             }],
         ]],
         ["IconLocation", "x=>x.Size + 2", [
@@ -652,8 +624,7 @@ x.ParentOf.__IconLocation.StringData"}],
             ["Offset",0,"Value",{"value":"x=>x.StartOf"}],
             ["Size",0,"uint32"],
             ["__Header",4,"uint32"],
-            ["Header",0,"Value",{"value":"x=>'0x' + 
-upcase(string=format(format='%08x',args=x.__Header))"}],
+            ["Header",0,"Value",{"value":"x=>'0x' + upcase(string=format(format='%08x',args=x.__Header))"}],
             ["BlockClass", 4, "Enumeration", {
                 "type": "uint32",
                 "map": {
@@ -695,11 +666,9 @@ upcase(string=format(format='%08x',args=x.__Header))"}],
                 "max_length": 520
             }],
             ["DataValue", 0, "Value",{ 
-                "value": "x=>if(condition= 
-x.__TargetAnsi=x.__TargetUnicode,
+                "value": "x=>if(condition= x.__TargetAnsi=x.__TargetUnicode,
                                     then=x.__TargetAnsi,
-                                    
-else=dict(Ascii=x.__TargetAnsi,Unicode=x.__TargetUnicode))" }],
+                                    else=dict(Ascii=x.__TargetAnsi,Unicode=x.__TargetUnicode))" }],
         ]],
         #0xA0000002
         ["ConsoleDataBlock", 0x000000CC, [
@@ -731,28 +700,24 @@ else=dict(Ascii=x.__TargetAnsi,Unicode=x.__TargetUnicode))" }],
             ["__ScreenBufferSizeX",12,"int16"],
             ["__ScreenBufferSizeY",14,"int16"],
             ["ScreenBufferSize",0,"Value",{
-                "value":"x=>format(format='%v x 
-%v',args=[x.__ScreenBufferSizeX,x.__ScreenBufferSizeY])"
+                "value":"x=>format(format='%v x %v',args=[x.__ScreenBufferSizeX,x.__ScreenBufferSizeY])"
             }],
             ["__WindowSizeX",16,"int16"],
             ["__WindowSizeY",18,"int16"],
             ["WindowSize",0,"Value",{
-                "value":"x=>format(format='%v x 
-%v',args=[x.__WindowSizeX,x.__WindowSizeY])"
+                "value":"x=>format(format='%v x %v',args=[x.__WindowSizeX,x.__WindowSizeY])"
             }],
             ["__WindowOriginX",20,"int16"],
             ["__WindowOriginY",22,"int16"],
             ["WindowOrigin",0,"Value",{
-                "value":"x=>format(format='%v / 
-%v',args=[x.__WindowOriginX,x.__WindowOriginY])"
+                "value":"x=>format(format='%v / %v',args=[x.__WindowOriginX,x.__WindowOriginY])"
             }], 
             ["__FontSizeW",32,"int16"],
             ["__FontSizeH",34,"int16"],
             ["FontSize",0,"Value",{
                 "value":"x=>if(condition= x.__FontSizeW=0,
                         then= x.__FontSizeH,
-                        else= format(format='%v / 
-%v',args=[x.__FontSizeW,x.__FontSizeH])) "
+                        else= format(format='%v / %v',args=[x.__FontSizeW,x.__FontSizeH])) "
             }],
             ["__FontFamily", 36, "BitField", {
                 type: "uint32",
@@ -792,11 +757,9 @@ else=dict(Ascii=x.__TargetAnsi,Unicode=x.__TargetUnicode))" }],
             ["CursorSize", 0 ,"Value",{
                 "value":"x=> if(condition= x.__CursorSize <= 25,
                                 then= 'Small',
-                        else=if(condition= x.__CursorSize >= 26 AND 
-x.__CursorSize <= 50,
+                        else=if(condition= x.__CursorSize >= 26 AND x.__CursorSize <= 50,
                                 then= 'Medium',
-                        else=if(condition= x.__CursorSize >= 51 AND 
-x.__CursorSize <= 100,
+                        else=if(condition= x.__CursorSize >= 51 AND x.__CursorSize <= 100,
                                 else= 'Large',
                                 else= x.__CursorSize )))"
             }],
@@ -841,21 +804,14 @@ x.__CursorSize <= 100,
         ["TrackerDataBlock", 0x00000060, [
             ["__DataBlockSize",0,"uint32"],
             ["__MachineID", 16, "String"],
-            ["MachineID", 0, "Value",{ "value": "x=>if(condition= 
-x.__MachineID=~'[^ -~]+', then=Null, else=x.__MachineID )" }],
-            ["MacAddress", 0, "Value",{ "value": 
-"x=>if(condition=x.MachineID,then=split(string=x.Droid[1],sep='-')[-1])" 
-}],
+            ["MachineID", 0, "Value",{ "value": "x=>if(condition= x.__MachineID=~'[^ -~]+', then=Null, else=x.__MachineID )" }],
+            ["MacAddress", 0, "Value",{ "value": "x=>if(condition=x.MachineID,then=split(string=x.Droid[1],sep='-')[-1])" }],
             ["__Droid0", 32, "GUID"],
             ["__Droid1", 48, "GUID"],
-            ["Droid", 0, "Value",{"value": 
-"x=>if(condition=x.MachineID,then=(x.__Droid0.Value,x.__Droid1.Value))" 
-}],
+            ["Droid", 0, "Value",{"value": "x=>if(condition=x.MachineID,then=(x.__Droid0.Value,x.__Droid1.Value))" }],
             ["__DroidBirth0", 64, "GUID"],
             ["__DroidBirth1", 80, "GUID"],
-            ["DroidBirth", 0, "Value",{ "value": 
-"x=>if(condition=x.MachineID,then=(x.__DroidBirth0.Value, 
-x.__DroidBirth0.Value))" }],
+            ["DroidBirth", 0, "Value",{ "value": "x=>if(condition=x.MachineID,then=(x.__DroidBirth0.Value, x.__DroidBirth0.Value))" }],
         ]],
         #0xA0000004
         ["ConsoleFEDataBlock", 0x0000000C, [
@@ -879,11 +835,9 @@ x.__DroidBirth0.Value))" }],
                 "max_length": 520
             }],
             ["DataValue", 0, "Value",{ 
-                "value": "x=>if(condition= 
-x.__DarwinDataAnsi=x.__DarwinDataUnicode,
+                "value": "x=>if(condition= x.__DarwinDataAnsi=x.__DarwinDataUnicode,
                                     then=x.__DarwinDataAnsi,
-                                    
-else=dict(Ascii=x.__DarwinDataAnsi,Unicode=x.__DarwinDataUnicode))" }],
+                                    else=dict(Ascii=x.__DarwinDataAnsi,Unicode=x.__DarwinDataUnicode))" }],
         ]],
         #0xA0000007
         ["IconEnvironmentDataBlock", 0x00000314, [
@@ -894,11 +848,9 @@ else=dict(Ascii=x.__DarwinDataAnsi,Unicode=x.__DarwinDataUnicode))" }],
                 "max_length": 520,
             }],
             ["DataValue", 0, "Value",{ 
-                "value": "x=>if(condition= 
-x.__TargetAnsi=x.__TargetUnicode,
+                "value": "x=>if(condition= x.__TargetAnsi=x.__TargetUnicode,
                                     then=x.__TargetAnsi,
-                                    
-else=dict(Ascii=x.__TargetAnsi,Unicode=x.__TargetUnicode))" }],
+                                    else=dict(Ascii=x.__TargetAnsi,Unicode=x.__TargetUnicode))" }],
         ]],
         #0xA0000008
         ["ShimDataBlock", "x=>x.__DataBlockSize", [
@@ -917,10 +869,8 @@ else=dict(Ascii=x.__TargetAnsi,Unicode=x.__TargetUnicode))" }],
                 "type": "PropertyStorage",
                 "sentinal": "x=>x.__DataBlockSize = 0"
             }],
-            
-["DataValue",0,"Value",{"value":"x=>x.PropertyStorage.PropertyValue"}],
-            
-#["DataValue",0,"Value",{"value":"x=>property_store(data=x.PropertyStorage.PropertyValue)"}],
+            ["DataValue",0,"Value",{"value":"x=>x.PropertyStorage.PropertyValue"}],
+            #["DataValue",0,"Value",{"value":"x=>property_store(data=x.PropertyStorage.PropertyValue)"}],
             
         ]],
         #0xA000000B
@@ -931,26 +881,18 @@ else=dict(Ascii=x.__TargetAnsi,Unicode=x.__TargetUnicode))" }],
             ["__Offset", 24,"uint32"],
             ["KnownFolder", 0, "Value", { 
                 "value": "x=> get(item=dict(
-                    
-`DE61D971-5EBC-4F02-A3A9-6C82895E5C04`='AddNewPrograms',
+                    `DE61D971-5EBC-4F02-A3A9-6C82895E5C04`='AddNewPrograms',
                     `724EF170-A42D-4FEF-9F26-B60E846FBA4F`='AdminTools',
                     `A520A1A4-1780-4FF6-BD18-167343C5AF16`='AppDataLow',
                     `A305CE99-F527-492B-8B1A-7E76FA98D6E4`='AppUpdates',
                     `9E52AB10-F80D-49DF-ACB8-4330F5687855`='CDBurning',
-                    
-`DF7266AC-9274-4867-8D55-3BD661DE872D`='ChangeRemovePrograms',
-                    
-`D0384E7D-BAC3-4797-8F14-CBA229B392B5`='CommonAdminTools',
-                    
-`C1BAE2D0-10DF-4334-BEDD-7AA20B227A9D`='CommonOEMLinks',
-                    
-`0139D44E-6AFE-49F2-8690-3DAFCAE6FFB8`='CommonPrograms',
-                    
-`A4115719-D62E-491D-AA7C-E74B8BE3B067`='CommonStartMenu',
-                    
-`82A5EA35-D9CD-47C5-9629-E15D2F714E6E`='CommonStartup',
-                    
-`B94237E7-57AC-4347-9151-B08C6C32D1F7`='CommonTemplates',
+                    `DF7266AC-9274-4867-8D55-3BD661DE872D`='ChangeRemovePrograms',
+                    `D0384E7D-BAC3-4797-8F14-CBA229B392B5`='CommonAdminTools',
+                    `C1BAE2D0-10DF-4334-BEDD-7AA20B227A9D`='CommonOEMLinks',
+                    `0139D44E-6AFE-49F2-8690-3DAFCAE6FFB8`='CommonPrograms',
+                    `A4115719-D62E-491D-AA7C-E74B8BE3B067`='CommonStartMenu',
+                    `82A5EA35-D9CD-47C5-9629-E15D2F714E6E`='CommonStartup',
+                    `B94237E7-57AC-4347-9151-B08C6C32D1F7`='CommonTemplates',
                     `0AC0837C-BBF8-452A-850D-79D08E667CA7`='Computer',
                     `4BFEFB45-347D-4006-A5BE-AC0CB0567192`='Conflict',
                     `6F0CD92B-2E97-45D1-88FF-B0D186B8DEDD`='Connections',
@@ -966,18 +908,15 @@ else=dict(Ascii=x.__TargetAnsi,Unicode=x.__TargetUnicode))" }],
                     `054FAE61-4DD8-4787-80B6-090220C4B700`='GameTasks',
                     `D9DC8A3B-B784-432E-A781-5A1130A75963`='History',
                     `4D9F7874-4E0C-4904-967B-40B0D20C3E4B`='Internet',
-                    
-`352481E8-33BE-4251-BA85-6007CAEDCF9D`='InternetCache',
+                    `352481E8-33BE-4251-BA85-6007CAEDCF9D`='InternetCache',
                     `BFB9D5E0-C6A9-404C-B2B2-AE6DB6AF4968`='Links',
                     `F1B32785-6FBA-4FCF-9D55-7B8E7F157091`='LocalAppData',
-                    
-`2A00375E-224C-49DE-B8D1-440DF7EF3DDC`='LocalizedResourcesDir',
+                    `2A00375E-224C-49DE-B8D1-440DF7EF3DDC`='LocalizedResourcesDir',
                     `4BD8D571-6D19-48D3-BE97-422220080E43`='Music',
                     `C5ABBF53-E17F-4121-8900-86626FC2C973`='NetHood',
                     `D20BEEC4-5CA8-4905-AE3B-BF251EA09B53`='Network',
                     `31C0DD25-9439-4F12-BF41-7FF4EDA38722`='Objects3D',
-                    
-`2C36C0AA-5812-4B87-BFD0-4CD0DFB19B39`='OriginalImages',
+                    `2C36C0AA-5812-4B87-BFD0-4CD0DFB19B39`='OriginalImages',
                     `69D2CF90-FC33-4FB7-9A0C-EBB0F0FCB43C`='PhotoAlbums',
                     `33E28130-4E1E-4676-835A-98395C3BC3BB`='Pictures',
                     `DE92C1C7-837F-4F69-A3BB-86E631204A23`='Playlists',
@@ -986,52 +925,37 @@ else=dict(Ascii=x.__TargetAnsi,Unicode=x.__TargetUnicode))" }],
                     `5E6C858F-0E22-4760-9AFE-EA3317B67173`='Profile',
                     `62AB5D82-FDC1-4DC3-A9DD-070D1D495D97`='ProgramData',
                     `905E63B6-C1BF-494E-B29C-65B732D3D21A`='ProgramFiles',
-                    
-`F7F1ED05-9F6D-47A2-AAAE-29D317C6F066`='ProgramFilesCommon',
-                    
-`6365D5A7-0F0D-45E5-87F6-0DA56B6A4F7D`='ProgramFilesCommonX64',
-                    
-`DE974D24-D9C6-4D3E-BF91-F4455120B917`='ProgramFilesCommonX86',
-                    
-`6D809377-6AF0-444B-8957-A3773F02200E`='ProgramFilesX64',
-                    
-`7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E`='ProgramFilesX86',
+                    `F7F1ED05-9F6D-47A2-AAAE-29D317C6F066`='ProgramFilesCommon',
+                    `6365D5A7-0F0D-45E5-87F6-0DA56B6A4F7D`='ProgramFilesCommonX64',
+                    `DE974D24-D9C6-4D3E-BF91-F4455120B917`='ProgramFilesCommonX86',
+                    `6D809377-6AF0-444B-8957-A3773F02200E`='ProgramFilesX64',
+                    `7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E`='ProgramFilesX86',
                     `A77F5D77-2E2B-44C3-A6A2-ABA601054A51`='Programs',
                     `DFDF76A2-C82A-4D63-906A-5644AC457385`='Public',
-                    
-`C4AA340D-F20F-4863-AFEF-F87EF2E6BA25`='PublicDesktop',
-                    
-`ED4824AF-DCE4-45A8-81E2-FC7965083634`='PublicDocuments',
-                    
-`3D644C9B-1FB8-4F30-9B45-F670235F79C0`='PublicDownloads',
-                    
-`DEBF2536-E1A8-4C59-B6A2-414586476AEA`='PublicGameTasks',
+                    `C4AA340D-F20F-4863-AFEF-F87EF2E6BA25`='PublicDesktop',
+                    `ED4824AF-DCE4-45A8-81E2-FC7965083634`='PublicDocuments',
+                    `3D644C9B-1FB8-4F30-9B45-F670235F79C0`='PublicDownloads',
+                    `DEBF2536-E1A8-4C59-B6A2-414586476AEA`='PublicGameTasks',
                     `3214FAB5-9757-4298-BB61-92A9DEAA44FF`='PublicMusic',
-                    
-`B6EBFB86-6907-413C-9AF7-4FC2ABF07CC5`='PublicPictures',
+                    `B6EBFB86-6907-413C-9AF7-4FC2ABF07CC5`='PublicPictures',
                     `2400183A-6185-49FB-A2D8-4A392A602BA3`='PublicVideos',
                     `52A4F021-7B75-48A9-9F6B-4B87A210BC8F`='QuickLaunch',
                     `AE50C081-EBD2-438A-8655-8A092E34987A`='Recent',
                     `BD85E001-112E-431E-983B-7B15AC09FFF1`='RecordedTV',
                     `B7534046-3ECB-4C18-BE4E-64CD4CB7D6AC`='RecycleBin',
                     `8AD10C31-2ADB-4296-A8F7-E4701232C972`='ResourceDir',
-                    
-`3EB685DB-65F9-4CF6-A03A-E3EF65729F3D`='RoamingAppData',
+                    `3EB685DB-65F9-4CF6-A03A-E3EF65729F3D`='RoamingAppData',
                     `B250C668-F57D-4EE1-A63C-290EE7D1AA1F`='SampleMusic',
-                    
-`C4900540-2379-4C75-844B-64E6FAF8716B`='SamplePictures',
-                    
-`15CA69B3-30EE-49C1-ACE1-6B5EC372AFB5`='SamplePlaylists',
+                    `C4900540-2379-4C75-844B-64E6FAF8716B`='SamplePictures',
+                    `15CA69B3-30EE-49C1-ACE1-6B5EC372AFB5`='SamplePlaylists',
                     `859EAD94-2E85-48AD-A71A-0969CB56A6CD`='SampleVideos',
                     `4C5C32FF-BB9D-43B0-B5B4-2D72E54EAAA4`='SavedGames',
-                    
-`7D1D3A04-DEBB-4115-95CF-2F29DA2920DA`='SavedSearches',
+                    `7D1D3A04-DEBB-4115-95CF-2F29DA2920DA`='SavedSearches',
                     `EE32E446-31CA-4ABA-814F-A5EBD2FD6D5E`='SEARCH_CSC',
                     `98EC0E18-2098-4D44-8644-66979315A281`='SEARCH_MAPI',
                     `190337D1-B8CA-4121-A639-6D472D16972A`='SearchHome',
                     `8983036C-27C0-404B-8F08-102D10DCFD74`='SendTo',
-                    
-`7B396E54-9EC5-4300-BE0A-2482EBAE1A26`='SidebarDefaultParts',
+                    `7B396E54-9EC5-4300-BE0A-2482EBAE1A26`='SidebarDefaultParts',
                     `A75D362E-50FC-4FB7-AC2C-A8BEAA314493`='SidebarParts',
                     `625B53C3-AB48-4EC1-BA1F-A1EF4146FC19`='StartMenu',
                     `B97D20BB-F46A-4C97-BA10-5E3608430854`='Startup',
@@ -1041,8 +965,7 @@ else=dict(Ascii=x.__TargetAnsi,Unicode=x.__TargetUnicode))" }],
                     `1AC14E77-02E7-4E5D-B744-2EB1AE5198B7`='System',
                     `D65231B0-B2F1-4857-A4CE-A8E7C6EA7D27`='SystemX86',
                     `A63293E8-664E-48DB-A079-DF759E0509F7`='Templates',
-                    
-`5B3749AD-B49F-49C1-83EB-15370FBD4882`='TreeProperties',
+                    `5B3749AD-B49F-49C1-83EB-15370FBD4882`='TreeProperties',
                     `0762D272-C50A-4BB0-A382-697DCD729B80`='UserProfiles',
                     `F3CE0F7C-4901-4ACC-8648-D5D44B04EF8F`='UsersFiles',
                     `18989B1D-99B5-455B-841C-AB7C74E4DDFC`='Videos',
@@ -1058,8 +981,7 @@ else=dict(Ascii=x.__TargetAnsi,Unicode=x.__TargetUnicode))" }],
         
         ["PropertyStorage","x=>x.StorageSize", [
             ["StorageSize",0,"uint32"],
-            #["Version",4,"String",{ "length":4 }], #Expect 1SPS / 
-0x53505331
+            #["Version",4,"String",{ "length":4 }], #Expect 1SPS / 0x53505331
             ["__Format", 8,"GUID"],
             ["Format", 0, "Value",{"value": "x=>x.__Format.Value" }],
             ["PropertyValue", 24, "Array", {
@@ -1071,27 +993,20 @@ else=dict(Ascii=x.__TargetAnsi,Unicode=x.__TargetUnicode))" }],
         ["PropertyValue","x=>x.__ValueSize", [
             ["__ValueSize",0,"uint32"],
             ["__ID",4,"uint32"],
-            ["GuidId",0,"Value",{"value": "x=>x.ParentOf.Format + '/' + 
-str(str=x.__ID)"}],
+            ["GuidId",0,"Value",{"value": "x=>x.ParentOf.Format + '/' + str(str=x.__ID)"}],
             ["Description", 0, "Value", { 
                 "value": "x=> get(item=dict(
-                        
-`28636AA6-953D-11D2-B5D6-00C04FD918D0`=x.__SHELL_DETAILS,
+                        `28636AA6-953D-11D2-B5D6-00C04FD918D0`=x.__SHELL_DETAILS,
                         `446D16B1-8DAD-4870-A748-402EA43D788C`=x.__CACHE,
                         `46588AE2-4CBC-4338-BBFC-139326986DCE`=x.__User,
-                        
-`841E4F90-FF59-4D16-8947-E81BBFFAB36D`=x.__Software,
+                        `841E4F90-FF59-4D16-8947-E81BBFFAB36D`=x.__Software,
                         `86407DB8-9DF7-48CD-B986-F999ADC19731`=x.__Share,
                         `86D40B4D-9069-443C-819A-2A54090DCCEC`=x.__Tile,
-                        
-`9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3`=x.__AppUserModel,
-                        
-`B725F130-47EF-101A-A5F1-02608C9EEBAC`=x.__STORAGE,
-                        
-`DABD30ED-0043-4789-A7F8-D013A4736622`=x.__FolderDisplay,
+                        `9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3`=x.__AppUserModel,
+                        `B725F130-47EF-101A-A5F1-02608C9EEBAC`=x.__STORAGE,
+                        `DABD30ED-0043-4789-A7F8-D013A4736622`=x.__FolderDisplay,
                         `E3E0584C-B788-4A5A-BB20-7F5A44C9ACDD`=x.__SEARCH,
-                        
-`F29F85E0-4FF9-1068-AB91-08002B27B3D9`=x.__Document,
+                        `F29F85E0-4FF9-1068-AB91-08002B27B3D9`=x.__Document,
                         `FB8D2D7B-90D1-4E34-BF60-6EAC09922BBF`=x.__Hash),
                     member=x.ParentOf.Format) || 'Unknown Guid' " 
             }],
@@ -1293,8 +1208,7 @@ str(str=x.__ID)"}],
                                     `FILETIME`=x.__FILETIME,
                                     `UI8`=x.__UI8,
                                     `CLSID`=x.__CLSID.Value),
-                                member=x.Type) || 'Unknown: First bytes 
-0x' + upcase(string=format(format='%08x',args=x.__Size))" 
+                                member=x.Type) || 'Unknown: First bytes 0x' + upcase(string=format(format='%08x',args=x.__Size))" 
             }],
         ]],
         ["GUID", 16, [
@@ -1305,8 +1219,7 @@ str(str=x.__ID)"}],
             ["__D5", 10, "String", {"term": "", "length": 6}],
             ["Value", 0, "Value", { "value": "x=>upcase(string=
                     format(format='%08x-%04x-%04x-%02x-%02x',
-                        args=[x.__D1, x.__D2, x.__D3, x.__D4, x.__D5]))" 
-}],
+                        args=[x.__D1, x.__D2, x.__D3, x.__D4, x.__D5]))" }],
         ]]
      ]
      '''
@@ -1323,16 +1236,12 @@ sources:
                 profile=Profile, struct="ShellLinkHeader")  AS Parsed
         FROM targets
 
-     LET fixpath(data) = regex_transform(key='x', 
-source=join(sep='\\',array=data),
-            map=dict( `My Computer\\\\` = '', `:\\\\\\\\` = 
-''':\''',`\\\\\\\\\\\\` = '\\'))
+     LET fixpath(data) = regex_transform(key='x', source=join(sep='\\',array=data),
+            map=dict( `My Computer\\\\` = '', `:\\\\\\\\` = ''':\''',`\\\\\\\\\\\\` = '\\'))
             
-     LET property_store(data) = SELECT * FROM 
-foreach(row=data,query={SELECT * FROM foreach(row=_value,
+     LET property_store(data) = SELECT * FROM foreach(row=data,query={SELECT * FROM foreach(row=_value,
             query={
-                SELECT GuidId,Description,Type,Value FROM 
-foreach(row=_value)
+                SELECT GuidId,Description,Type,Value FROM foreach(row=_value)
             })})
 
 
@@ -1355,14 +1264,10 @@ foreach(row=_value)
             ) as ShellLinkHeader,
             Parsed.LinkInfo as LinkInfo,
             dict(
-                LinkTarget= if(condition= 
-len(list=fixpath(data=Parsed.LinkTargetIDList.IDList.ShellBag.Description.LongName))
-                    <   
-len(list=fixpath(data=Parsed.LinkTargetIDList.IDList.ShellBag.Description.ShortName)),
-                        then= 
-fixpath(data=Parsed.LinkTargetIDList.IDList.ShellBag.Description.ShortName),
-                        else= 
-fixpath(data=Parsed.LinkTargetIDList.IDList.ShellBag.Description.LongName)),
+                LinkTarget= if(condition= len(list=fixpath(data=Parsed.LinkTargetIDList.IDList.ShellBag.Description.LongName))
+                    <   len(list=fixpath(data=Parsed.LinkTargetIDList.IDList.ShellBag.Description.ShortName)),
+                        then= fixpath(data=Parsed.LinkTargetIDList.IDList.ShellBag.Description.ShortName),
+                        else= fixpath(data=Parsed.LinkTargetIDList.IDList.ShellBag.Description.LongName)),
                 LinkTargetIDList = Parsed.LinkTargetIDList
             ) as LinkTarget,
             Parsed.StringData as StringData,
@@ -1373,20 +1278,16 @@ fixpath(data=Parsed.LinkTargetIDList.IDList.ShellBag.Description.LongName)),
                             then= Data.DataValue, else= Data)  as _value 
                     FROM foreach(row=Parsed.ExtraData)
                 }) as ExtraData,
-            
-property_store(data=Parsed.ExtraData.Data.PropertyStorage.PropertyValue) 
-as PropertyStore
+            property_store(data=Parsed.ExtraData.Data.PropertyStorage.PropertyValue) as PropertyStore
         FROM lnk_files
 
-      LET results = SELECT 
-SourceFile,ShellLinkHeader,LinkInfo,LinkTarget,StringData,
+      LET results = SELECT SourceFile,ShellLinkHeader,LinkInfo,LinkTarget,StringData,
             if(condition=PropertyStore, 
                 then= ExtraData + dict(PropertyStore=PropertyStore),
                 else= ExtraData ) as ExtraData
         FROM parsed
         WHERE if(condition= IocRegex,
-                    then= 
-format(format='%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\s%s', 
+                    then= format(format='%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\s%s', 
                         args=[
                             StringData.TargetPath,
                             StringData.Name,
@@ -1401,8 +1302,7 @@ format(format='%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\s%s',
                         ]) =~ IocRegex,
                     else= True)
                 AND NOT if(condition= IgnoreRegex,
-                    then= 
-format(format='%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\s%s', 
+                    then= format(format='%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\s%s', 
                         args=[
                             StringData.TargetPath,
                             StringData.Name,
