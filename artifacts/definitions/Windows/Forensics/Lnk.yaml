@@ -558,7 +558,7 @@ export: |
             ["Name",0,"Value",{ "value":"x=> x.ParentOf.__Name.StringData"}],
             ["RelativePath",0,"Value",{ "value":"x=> x.ParentOf.__RelativePath.StringData"}],
             ["WorkingDir",0,"Value",{ "value":"x=> x.ParentOf__WorkingDir.StringData"}],
-            ["Arguments",0,"Value",{ "value":"x=> x.ParentOf.__Arguments"}],
+            ["Arguments",0,"Value",{ "value":"x=> x.ParentOf.__Arguments.StringData"}],
             ["IconLocation",0,"Value",{ "value":"x=> x.ParentOf.__IconLocation.StringData"}],
         ]],
         
