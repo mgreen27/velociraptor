@@ -153,10 +153,8 @@ sources:
             flat_data(type=Type, hivename=HiveName).Value as MruEntries,
             OSPath.Path as Key,
             HiveName,
-            if(condition=HiveGlob,
-                then='', else=Username) as Username,
-            if(condition=HiveGlob,
-                then='', else=UUID) as UUID
+            Username || dirname(path=HiveName).Basename as Username,
+            UUID as SID
           FROM AllValues
           WHERE Name = 'MRUListEx'
 
@@ -176,7 +174,7 @@ sources:
                 if(condition= NOT MruEntries[0],
                     then= Null,
                     else= MruEntries) as MruEntries,
-                Key, HiveName, Username, UUID
+                Key, HiveName, Username, SID
             FROM results
         })
       WHERE format(format='%v', args=MruEntries) =~ EntryRegex

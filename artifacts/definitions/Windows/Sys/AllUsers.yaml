@@ -32,7 +32,7 @@ sources:
           SELECT
              split(string=Key.OSPath.Basename, sep="-")[-1] as Uid,
              "" AS Gid,
-             lookupSID(sid=Key.OSPath.Basename) || "" AS Name,
+             lookupSID(sid=Key.OSPath.Basename) || basename(path=ProfileImagePath) AS Name,
              Key.OSPath as Description,
              ProfileImagePath as Directory,
              Key.OSPath.Basename as UUID,
