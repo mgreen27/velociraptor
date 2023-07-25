@@ -153,8 +153,8 @@ sources:
             flat_data(type=Type, hivename=HiveName).Value as MruEntries,
             OSPath.Path as Key,
             HiveName,
-            Username,
-            UUID as SID
+            Username || '' as Username,
+            UUID || '' as SID
           FROM AllValues
           WHERE Name = 'MRUListEx'
 
