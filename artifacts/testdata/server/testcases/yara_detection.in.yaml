@@ -15,7 +15,7 @@ Parameters:
     [{
       "StartOffset": 0,
       "EndOffset": 11,
-      "name": "EFI system partition",
+      "name": "EFI system partition"
     }]
   YaraRule: |
     rule HelloWorld {
