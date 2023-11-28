@@ -18,7 +18,7 @@ Parameters:
       "name": "EFI system partition",
     }]
   YaraRule: |
-    rule Hit {
+    rule HelloWorld {
       strings:
         $a = "hello world" nocase wide ascii
       condition:
