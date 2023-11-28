@@ -127,5 +127,5 @@ Queries:
     FROM Artifact.Windows.Detection.Yara.Device(DevicePath=srcDir + "/artifacts/testdata/files/MBR")
 
   # test Windows.Detection.Yara.UEFI
-  - SELECT OSPath, relpath(path=DevicePath, base=srcDir, sep="/") as TestPath, Size, Rule, HitOffset
+  - SELECT OSPath, relpath(path=DevicePath, base=srcDir, sep="/") as TestPath, Rule, HitOffset
     FROM Artifact.Windows.Detection.Yara.UEFI(ImagePath=srcDir + "artifacts/testdata/files/fat_very_small.dd",TargetGlob='**/*',YaraRule=YaraRule)
