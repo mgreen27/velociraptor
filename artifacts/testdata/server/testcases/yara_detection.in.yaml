@@ -11,6 +11,19 @@ Parameters:
           uint16(0) == 0x5A4D and
           uint32(uint32(0x3C)) == 0x00004550
       }
+  PartitionTable: |
+    [{
+      "StartOffset": 0,
+      "EndOffset": 11,
+      "name": "EFI system partition",
+    }]
+  YaraRule: |
+    rule Hit {
+      strings:
+        $a = "hello world" nocase wide ascii
+      condition:
+        any of them
+    }
 
 
 Queries:
@@ -105,8 +118,14 @@ Queries:
     Size,Rule,Mtime,Atime,Ctime,Btime
     FROM Artifact.Generic.Detection.Yara.Glob(DateBefore='2021-04-01',ContextBytes=10,YaraRule=MZRule)
 
-  # test Windows.Detection.Yara.Device (shoudl also work cross platform)
+  # test Windows.Detection.Yara.Device (should also work cross platform)
   - SELECT relpath(path=DevicePath, base=srcDir, sep="/") as TestPath,
       CleanContext(HitContext=HitContext),
       StartOffest,ScanLength,Rule,YaraString,HitOffset
     FROM Artifact.Windows.Detection.Yara.Device(DevicePath=srcDir + "/artifacts/testdata/files/MBR")
+
+  # test Windows.Detection.Yara.UEFI
+  - LET X <= SELECT mock(artifact=Artifact.Windows.Forensics.PartitionTable, results=parse_json_array(data=PartitionTable))
+      FROM scope()
+  - SELECT OSPath relpath(path=DevicePath, base=srcDir, sep="/") as TestPath, Size, Rule, HitOffset
+    FROM Artifact.Windows.Detection.Yara.UEFI(ImagePath=srcDir + "artifacts/testdata/files/fat_very_small.dd",TargetGlob='**/*',YaraRule=YaraRule)
