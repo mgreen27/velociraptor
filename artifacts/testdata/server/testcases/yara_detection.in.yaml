@@ -15,7 +15,10 @@ Parameters:
     [{
       "StartOffset": 0,
       "EndOffset": 11,
-      "name": "EFI system partition"
+      "Size": "25MB",
+      "name": "EFI system partition",
+      "TopLevelDirectory": "a",
+      "Magic": "EFI test file"
     }]
   YaraRule: |
     rule HelloWorld {
