@@ -77,9 +77,9 @@ LET X <= SELECT mock(plugin='info', results=[dict(OS='windows', foo='bar'), dict
   "Type": "TCP",
   "Status": "LISTEN",
   "Laddr": "::",
-  "LaddrPort": 3889,
+  "Lport": 3889,
   "Raddr": "::",
-  "RaddrPort": 0,
+  "Rport": 0,
   "Timestamp": "2019-11-27T01:18:15Z",
   "_Source": "Windows.Network.NetstatEnriched/Netstat"
  }
@@ -113,9 +113,9 @@ LET X <= SELECT mock(plugin='info', results=[dict(OS='windows', foo='bar'), dict
   "Type": "TCP",
   "Status": "LISTEN",
   "Laddr": "::",
-  "LaddrPort": 3889,
+  "Lport": 3889,
   "Raddr": "::",
-  "RaddrPort": 0,
+  "Rport": 0,
   "Timestamp": "2019-11-27T01:18:15Z",
   "_Source": "Windows.Network.NetstatEnriched/Netstat"
  }
@@ -149,9 +149,9 @@ LET X <= SELECT mock(plugin='info', results=[dict(OS='windows', foo='bar'), dict
   "Type": "TCP",
   "Status": "ESTAB",
   "Laddr": "172.168.101.128",
-  "LaddrPort": 64371,
+  "Lport": 64371,
   "Raddr": "10.179.67.176",
-  "RaddrPort": 443,
+  "Rport": 443,
   "Timestamp": "2019-12-07T03:30:58Z",
   "_Source": "Windows.Network.NetstatEnriched/Netstat"
  }
