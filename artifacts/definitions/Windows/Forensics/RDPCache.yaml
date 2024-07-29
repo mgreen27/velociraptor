@@ -28,7 +28,6 @@ parameters:
      description: Regex filter of user to target. StartOf(^) and EndOf($)) regex may behave unexpectanly.
      type: regex
    - name: ParseCache
-     default: True
      description: If selected will parse .BIN RDPcache files.
      type: bool
    - name: Workers
