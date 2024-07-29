@@ -1,4 +1,4 @@
-name: Windows.Forensics.RDPCacheDev
+name: Windows.Forensics.RDPCache
 author: Matt Green - @mgreen27
 description: |
     This artifact parses, views and enables simplified upload of RDP 
