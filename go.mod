@@ -10,7 +10,7 @@ require (
 	github.com/Velocidex/etw v0.0.0-20250314035532-6115b05b9430
 	github.com/Velocidex/go-elasticsearch/v7 v7.3.1-0.20191001125819-fee0ef9cac6b
 	github.com/Velocidex/go-magic v0.0.0-20250203094020-32f94b14f00f
-	github.com/Velocidex/go-yara v1.1.10-0.20240309155455-3f491847cec9
+	github.com/Velocidex/go-yara v1.1.10-0.20250823152352-e5fc0843e50e
 	github.com/Velocidex/grpc-go-pool v1.2.2-0.20241016164850-ff0cb80037a8
 	github.com/Velocidex/json v0.0.0-20220224052537-92f3c0326e5a
 	github.com/Velocidex/pkcs7 v0.0.0-20230220112103-d4ed02e1862a
@@ -71,15 +71,15 @@ require (
 	github.com/xor-gate/debpkg v1.0.0
 	go.starlark.net v0.0.0-20230925163745-10651d5192ab
 	golang.org/x/crypto v0.39.0
-	golang.org/x/mod v0.25.0
+	golang.org/x/mod v0.26.0
 	golang.org/x/net v0.41.0
 	golang.org/x/sys v0.33.0
-	golang.org/x/text v0.27.0
+	golang.org/x/text v0.28.0
 	golang.org/x/time v0.5.0
 	google.golang.org/api v0.169.0
 	google.golang.org/genproto v0.0.0-20240213162025-012b6fc9bca9 // indirect
 	google.golang.org/grpc v1.67.1
-	google.golang.org/protobuf v1.36.5
+	google.golang.org/protobuf v1.36.7
 	gopkg.in/alecthomas/kingpin.v2 v2.2.6
 	gopkg.in/alexcesaro/quotedprintable.v3 v3.0.0-20150716171945-2caba252f4dc // indirect
 	gopkg.in/gomail.v2 v2.0.0-20160411212932-81ebce5c23df
@@ -92,12 +92,12 @@ require (
 	www.velocidex.com/golang/go-prefetch v0.0.0-20250529114725-e36ea8a283e2
 	www.velocidex.com/golang/oleparse v0.0.0-20250312121321-f7c2b4ec0959
 	www.velocidex.com/golang/regparser v0.0.0-20250203141505-31e704a67ef7
-	www.velocidex.com/golang/vfilter v0.0.0-20250730023345-e96cf083b79c
+	www.velocidex.com/golang/vfilter v0.0.0-20250822163628-cf253ab459bc
 )
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.6.0
-	github.com/Masterminds/semver/v3 v3.3.0
+	github.com/Masterminds/semver/v3 v3.4.0
 	github.com/Masterminds/sprig/v3 v3.2.2
 	github.com/Velocidex/WinPmem/go-winpmem v0.0.0-20250618151512-1385e105b127
 	github.com/Velocidex/file-rotatelogs v0.0.0-20211221020724-d12e4dae4e11
@@ -105,13 +105,13 @@ require (
 	github.com/Velocidex/go-ewf v0.0.0-20240210123447-97dc81b7d8c3
 	github.com/Velocidex/go-ext4 v0.0.0-20250510085914-b0b955af0359
 	github.com/Velocidex/go-fat v0.0.0-20230923165230-3e6c4265297a
-	github.com/Velocidex/go-journalctl v0.0.0-20241004063153-cc1c858415bd
+	github.com/Velocidex/go-journalctl v0.0.0-20250813052126-d39241ea8ef7
 	github.com/Velocidex/go-mscfb v0.0.0-20240618091452-31f4ccc54002
 	github.com/Velocidex/go-vhdx v0.0.0-20250511013458-5cba970cdeda
 	github.com/Velocidex/go-vmdk v0.0.0-20250505140221-bd4633ce2fbf
 	github.com/Velocidex/grok v0.0.1
-	github.com/Velocidex/ordereddict v0.0.0-20250626035939-2f7f022fc719
-	github.com/Velocidex/sigma-go v0.0.0-20241025122940-1b771d3d57a9
+	github.com/Velocidex/ordereddict v0.0.0-20250821063524-02dc06e46238
+	github.com/Velocidex/sigma-go v0.0.0-20241113062227-c1c5ea4b5250
 	github.com/Velocidex/tracee_velociraptor v0.0.0-20250620124218-01f48d6fc3a1
 	github.com/VirusTotal/gyp v0.9.1-0.20231202132633-bb35dbf177a6
 	github.com/alecthomas/kingpin/v2 v2.4.0
@@ -166,7 +166,7 @@ require (
 	github.com/360EntSecGroup-Skylar/excelize v1.4.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.17.1 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.10.0 // indirect
-	github.com/BurntSushi/toml v1.4.0 // indirect
+	github.com/BurntSushi/toml v1.5.0 // indirect
 	github.com/PuerkitoBio/goquery v1.8.1 // indirect
 	github.com/alecthomas/colour v0.1.0 // indirect
 	github.com/alecthomas/template v0.0.0-20190718012654-fb15b899a751 // indirect
@@ -324,6 +324,7 @@ require (
 // replace github.com/Velocidex/fileb0x => ../fileb0x
 // replace github.com/Velocidex/go-ext4 => ../go-ext4
 // replace github.com/Velocidex/amsi => ../amsi
+// replace github.com/Velocidex/go-journalctl ../go-journalctl
 
 // Remove search for html end block. This allows inserting unbalanced
 // HTML tags into the markdown

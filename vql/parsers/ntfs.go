@@ -173,20 +173,28 @@ func (self NTFSFunction) Call(
 		// file with the 'raw_ntfs' accessor.
 		if len(result.Hardlinks) > 0 {
 			ospath, _ = accessors.NewWindowsNTFSPath("")
-			ospath.SetPathSpec(&accessors.PathSpec{
+			err = ospath.SetPathSpec(&accessors.PathSpec{
 				DelegateAccessor: arg.Accessor,
 				DelegatePath:     arg.Filename.Path(),
 				Path:             result.Hardlinks[0],
 			})
+			if err != nil {
+				scope.Log("parse_ntfs: SetPathSpec %v", err)
+				return &vfilter.Null{}
+			}
 		}
 
 		// An MFT file was given, cant really open the file anyway.
 	} else if arg.MFTFilename != nil {
 		if len(result.Hardlinks) > 0 {
 			ospath, _ = accessors.NewWindowsNTFSPath("")
-			ospath.SetPathSpec(&accessors.PathSpec{
+			err = ospath.SetPathSpec(&accessors.PathSpec{
 				Path: result.Hardlinks[0],
 			})
+			if err != nil {
+				scope.Log("parse_ntfs: SetPathSpec %v", err)
+				return &vfilter.Null{}
+			}
 		}
 	}
 
@@ -221,12 +229,6 @@ func (self MFTScanPlugin) Call(
 		err := arg_parser.ExtractArgsWithContext(ctx, scope, args, arg)
 		if err != nil {
 			scope.Log("parse_mft: %v", err)
-			return
-		}
-
-		err = vql_subsystem.CheckFilesystemAccess(scope, arg.Accessor)
-		if err != nil {
-			scope.Log("parse_mft: %s", err)
 			return
 		}
 

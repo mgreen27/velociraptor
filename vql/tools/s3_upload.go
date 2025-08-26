@@ -2,9 +2,7 @@ package tools
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
-	"net/http"
 
 	"github.com/Velocidex/ordereddict"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,6 +18,7 @@ import (
 	"www.velocidex.com/golang/velociraptor/constants"
 	"www.velocidex.com/golang/velociraptor/services"
 	"www.velocidex.com/golang/velociraptor/uploads"
+	"www.velocidex.com/golang/velociraptor/utils"
 	"www.velocidex.com/golang/velociraptor/vql"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
 	"www.velocidex.com/golang/velociraptor/vql/networking"
@@ -61,6 +60,12 @@ func (self S3UploadFunction) Call(ctx context.Context,
 		return vfilter.Null{}
 	}
 
+	err = self.maybeForceSecrets(ctx, scope, arg)
+	if err != nil {
+		scope.Log("upload_S3: %s", err.Error())
+		return vfilter.Null{}
+	}
+
 	if arg.Secret != "" {
 		err := mergeSecret(ctx, scope, arg)
 		if err != nil {
@@ -69,7 +74,7 @@ func (self S3UploadFunction) Call(ctx context.Context,
 		}
 	}
 
-	err = vql_subsystem.CheckFilesystemAccess(scope, arg.Accessor)
+	err = vql_subsystem.CheckAccess(scope, acls.NETWORK)
 	if err != nil {
 		scope.Log("upload_S3: %s", err)
 		return vfilter.Null{}
@@ -162,26 +167,25 @@ func upload_S3(ctx context.Context, scope vfilter.Scope,
 		s3_opts = append(s3_opts, func(o *s3.Options) {
 			o.BaseEndpoint = aws.String(endpoint)
 		})
+	}
 
+	clientConfig, ok := artifacts.GetConfig(scope)
+	if ok {
 		if NoVerifyCert {
-			clientConfig, _ := artifacts.GetConfig(scope)
-			tlsConfig, err := networking.GetSkipVerifyTlsConfig(clientConfig)
-
+			http_client, err := networking.GetSkipVerifyHTTPClient(
+				ctx, clientConfig, scope, "", nil)
 			if err != nil {
-				return &uploads.UploadResponse{
-					Error: err.Error(),
-				}, err
+				return nil, err
 			}
 
-			tr := &http.Transport{
-				Proxy:           networking.GetProxy(),
-				TLSClientConfig: tlsConfig,
-				TLSNextProto: make(map[string]func(
-					authority string, c *tls.Conn) http.RoundTripper),
+			conf = append(conf, config.WithHTTPClient(http_client))
+
+		} else {
+			http_client, err := networking.GetDefaultHTTPClient(
+				ctx, clientConfig, scope, "", nil)
+			if err != nil {
+				return nil, err
 			}
-
-			http_client := &http.Client{Transport: tr}
-
 			conf = append(conf, config.WithHTTPClient(http_client))
 		}
 	}
@@ -234,12 +238,35 @@ func upload_S3(ctx context.Context, scope vfilter.Scope,
 func (self S3UploadFunction) Info(
 	scope vfilter.Scope, type_map *vfilter.TypeMap) *vfilter.FunctionInfo {
 	return &vfilter.FunctionInfo{
-		Name:     "upload_s3",
-		Doc:      "Upload files to S3.",
-		ArgType:  type_map.AddType(scope, &S3UploadArgs{}),
-		Metadata: vql.VQLMetadata().Permissions(acls.FILESYSTEM_READ).Build(),
-		Version:  2,
+		Name:    "upload_s3",
+		Doc:     "Upload files to S3.",
+		ArgType: type_map.AddType(scope, &S3UploadArgs{}),
+		Metadata: vql.VQLMetadata().Permissions(
+			acls.NETWORK, acls.FILESYSTEM_READ).Build(),
+		Version: 2,
 	}
+}
+
+func (self S3UploadFunction) maybeForceSecrets(
+	ctx context.Context, scope vfilter.Scope, arg *S3UploadArgs) error {
+
+	// Not running on the server, secrets dont work.
+	config_obj, ok := vql_subsystem.GetServerConfig(scope)
+	if !ok {
+		return nil
+	}
+
+	if config_obj.Security != nil &&
+		!config_obj.Security.VqlMustUseSecrets {
+		return nil
+	}
+
+	// If an explicit secret is defined let it filter the URLs.
+	if arg.Secret != "" {
+		return nil
+	}
+
+	return utils.SecretsEnforced
 }
 
 var critical_fields = []string{
@@ -302,13 +329,13 @@ func mergeSecret(ctx context.Context, scope vfilter.Scope, arg *S3UploadArgs) er
 		return err
 	}
 
-	s.GetString("region", &arg.Region)
-	s.GetString("credentials_key", &arg.CredentialsKey)
-	s.GetString("credentials_secret", &arg.CredentialsSecret)
-	s.GetString("credentials_token", &arg.CredentialsToken)
-	s.GetString("endpoint", &arg.Endpoint)
-	s.GetString("serverside_encryption", &arg.ServerSideEncryption)
-	s.GetString("kms_encryption_key", &arg.KmsEncryptionKey)
+	arg.Region = s.GetString("region")
+	arg.CredentialsKey = s.GetString("credentials_key")
+	arg.CredentialsSecret = s.GetString("credentials_secret")
+	arg.CredentialsToken = s.GetString("credentials_token")
+	arg.Endpoint = s.GetString("endpoint")
+	arg.ServerSideEncryption = s.GetString("serverside_encryption")
+	arg.KmsEncryptionKey = s.GetString("kms_encryption_key")
 
 	return nil
 }

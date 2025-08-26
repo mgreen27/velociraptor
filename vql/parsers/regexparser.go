@@ -51,12 +51,6 @@ func _ParseFile(
 	arg *_ParseFileWithRegexArgs,
 	output_chan chan vfilter.Row) {
 
-	err := vql_subsystem.CheckFilesystemAccess(scope, arg.Accessor)
-	if err != nil {
-		scope.Log("parse_records_with_regex: %s", err)
-		return
-	}
-
 	accessor, err := accessors.GetAccessor(arg.Accessor, scope)
 	if err != nil {
 		scope.Log("error: %v", err)
@@ -368,8 +362,9 @@ func (self _RegexMap) Call(
 	regex_map := vql_subsystem.CacheGet(scope, key)
 	if utils.IsNil(regex_map) {
 		// Make a new set of transforms
-		for _, search := range arg.Map.Keys() {
-			replace, _ := arg.Map.GetString(search)
+		for _, i := range arg.Map.Items() {
+			search := i.Key
+			replace := utils.ToString(i.Value)
 
 			re, err := regexp.Compile("(?i)" + search)
 			if err != nil {

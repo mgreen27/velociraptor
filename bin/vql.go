@@ -65,9 +65,8 @@ func formatPlugins(
 		if pres {
 			record += "Arg | Description | Type\n"
 			record += "----|-------------|-----\n"
-			for _, k := range arg_desc.Fields.Keys() {
-				v_any, _ := arg_desc.Fields.Get(k)
-				v, ok := v_any.(*types.TypeReference)
+			for _, i := range arg_desc.Fields.Items() {
+				v, ok := i.Value.(*types.TypeReference)
 				if !ok {
 					continue
 				}
@@ -87,7 +86,7 @@ func formatPlugins(
 					doc = matches[1]
 				}
 				record += fmt.Sprintf(
-					"%s | %s | %s %s\n", k, doc, target, required)
+					"%s | %s | %s %s\n", i.Key, doc, target, required)
 			}
 		}
 
@@ -122,9 +121,8 @@ func formatFunctions(
 		if pres {
 			record += "Arg | Description | Type\n"
 			record += "----|-------------|-----\n"
-			for _, k := range arg_desc.Fields.Keys() {
-				v_any, _ := arg_desc.Fields.Get(k)
-				v, ok := v_any.(*types.TypeReference)
+			for _, i := range arg_desc.Fields.Items() {
+				v, ok := i.Value.(*types.TypeReference)
 				if !ok {
 					continue
 				}
@@ -144,7 +142,7 @@ func formatFunctions(
 					doc = matches[1]
 				}
 				record += fmt.Sprintf(
-					"%s | %s | %s %s\n", k, doc, target, required)
+					"%s | %s | %s %s\n", i.Key, doc, target, required)
 			}
 		}
 
@@ -184,20 +182,16 @@ func doVQLList() error {
 	fmt.Println("Accessors")
 	fmt.Println("===========")
 	fmt.Println("")
-	description := accessors.DescribeAccessors()
-	keys := description.Keys()
-	sort.Strings(keys)
-	if description != nil {
-		for _, k := range keys {
-			v, _ := description.Get(k)
-			fmt.Printf("**%s**: %s\n\n", k, v)
-		}
+	for _, description := range accessors.DescribeAccessors() {
+		fmt.Printf("**%s**: %s\n\n", description.Name,
+			description.Description)
 	}
 
 	return nil
 }
 
-func getOldItem(name, item_type string, old_data []*api_proto.Completion) *api_proto.Completion {
+func getOldItem(name, item_type string,
+	old_data []*api_proto.Completion) *api_proto.Completion {
 	for _, item := range old_data {
 		if item.Name == name && item.Type == item_type {
 			return item
@@ -211,30 +205,45 @@ func exportAccessors(old_data []*api_proto.Completion) []*api_proto.Completion {
 
 	platform := vql_subsystem.GetMyPlatform()
 
-	description := accessors.DescribeAccessors()
-	if description == nil {
-		return completions
-	}
+	lookup := make(map[string]*accessors.AccessorDescriptor)
 
-	for _, k := range description.Keys() {
-		v, _ := description.Get(k)
-		v_str, ok := v.(string)
-		if !ok {
-			continue
+	for _, description := range accessors.DescribeAccessors() {
+		lookup[description.Name] = description
+		var metadata map[string]string
+		desc_md := description.Metadata()
+		if desc_md.Len() > 0 {
+			metadata = make(map[string]string)
+			for _, i := range desc_md.Items() {
+				metadata[i.Key] = utils.ToString(i.Value)
+			}
 		}
 
-		new_item := getOldItem(k, "Accessor", old_data)
+		new_item := getOldItem(description.Name, "Accessor", old_data)
 		if new_item == nil {
 			new_item = &api_proto.Completion{
-				Name:        k,
-				Description: v_str,
+				Name:        description.Name,
+				Description: description.Description,
 				Type:        "Accessor",
+				Metadata:    metadata,
 			}
+		} else {
+			// Update the record with new information
+			new_item.Metadata = metadata
 		}
 
 		if !vutils.InString(new_item.Platforms, platform) {
 			new_item.Platforms = append(new_item.Platforms, platform)
 			sort.Strings(new_item.Platforms)
+		}
+
+		if description.ArgType != nil {
+			scope := vql_subsystem.MakeScope()
+			type_map := types.NewTypeMap()
+			arg_desc, ok := type_map.Get(scope,
+				type_map.AddType(scope, description.ArgType))
+			if ok {
+				addTypeDescription(new_item, arg_desc)
+			}
 		}
 
 		completions = append(completions, new_item)
@@ -244,7 +253,7 @@ func exportAccessors(old_data []*api_proto.Completion) []*api_proto.Completion {
 	// implementation. They could be defined in other architectures.
 	for _, i := range old_data {
 		if i.Type == "Accessor" {
-			_, pres := description.Get(i.Name)
+			_, pres := lookup[i.Name]
 			if !pres {
 				completions = append(completions, i)
 			}
@@ -308,9 +317,8 @@ func doVQLExport() error {
 		var metadata map[string]string
 		if item.Metadata != nil {
 			metadata = make(map[string]string)
-			for _, k := range item.Metadata.Keys() {
-				v, _ := item.Metadata.GetString(k)
-				metadata[k] = v
+			for _, i := range item.Metadata.Items() {
+				metadata[i.Key] = utils.ToString(i.Value)
 			}
 		}
 
@@ -341,30 +349,7 @@ func doVQLExport() error {
 
 		arg_desc, pres := type_map.Get(scope, item.ArgType)
 		if pres {
-			for _, k := range arg_desc.Fields.Keys() {
-				v_any, _ := arg_desc.Fields.Get(k)
-				v, ok := v_any.(*types.TypeReference)
-				if !ok {
-					continue
-				}
-
-				arg := &api_proto.ArgDescriptor{
-					Repeated: v.Repeated,
-					Name:     k,
-					Type:     v.Target,
-				}
-
-				if strings.Contains(v.Tag, "required") {
-					arg.Required = true
-				}
-
-				matches := doc_regex.FindStringSubmatch(v.Tag)
-				if matches != nil {
-					arg.Description = matches[1]
-				}
-
-				new_item.Args = append(new_item.Args, arg)
-			}
+			addTypeDescription(new_item, arg_desc)
 		}
 		new_data = append(new_data, new_item)
 	}
@@ -380,9 +365,8 @@ func doVQLExport() error {
 		var metadata map[string]string
 		if item.Metadata != nil {
 			metadata = make(map[string]string)
-			for _, k := range item.Metadata.Keys() {
-				v, _ := item.Metadata.GetString(k)
-				metadata[k] = v
+			for _, i := range item.Metadata.Items() {
+				metadata[i.Key] = utils.ToString(i.Value)
 			}
 		}
 
@@ -413,30 +397,7 @@ func doVQLExport() error {
 
 		arg_desc, pres := type_map.Get(scope, item.ArgType)
 		if pres {
-			for _, k := range arg_desc.Fields.Keys() {
-				v_any, _ := arg_desc.Fields.Get(k)
-				v, ok := v_any.(*types.TypeReference)
-				if !ok {
-					continue
-				}
-
-				arg := &api_proto.ArgDescriptor{
-					Repeated: v.Repeated,
-					Type:     v.Target,
-					Name:     k,
-				}
-
-				if strings.Contains(v.Tag, "required") {
-					arg.Required = true
-				}
-
-				matches := doc_regex.FindStringSubmatch(v.Tag)
-				if matches != nil {
-					arg.Description = matches[1]
-				}
-
-				new_item.Args = append(new_item.Args, arg)
-			}
+			addTypeDescription(new_item, arg_desc)
 		}
 		new_data = append(new_data, new_item)
 	}
@@ -491,4 +452,33 @@ func init() {
 		}
 		return true
 	})
+}
+
+func addTypeDescription(new_item *api_proto.Completion, arg_desc *types.TypeDescription) {
+	// Clear the old args
+	new_item.Args = nil
+
+	for _, i := range arg_desc.Fields.Items() {
+		v, ok := i.Value.(*types.TypeReference)
+		if !ok {
+			continue
+		}
+
+		arg := &api_proto.ArgDescriptor{
+			Repeated: v.Repeated,
+			Name:     i.Key,
+			Type:     v.Target,
+		}
+
+		if strings.Contains(v.Tag, "required") {
+			arg.Required = true
+		}
+
+		matches := doc_regex.FindStringSubmatch(v.Tag)
+		if matches != nil {
+			arg.Description = matches[1]
+		}
+
+		new_item.Args = append(new_item.Args, arg)
+	}
 }

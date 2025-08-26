@@ -58,11 +58,8 @@ func (self *Pipe) Read(buff []byte) (int, error) {
 
 		switch t := row.(type) {
 		case *ordereddict.Dict:
-			keys := t.Keys()
-			if len(keys) >= 1 {
-				value, _ := t.Get(keys[0])
-
-				switch t := value.(type) {
+			for _, v := range t.Values() {
+				switch t := v.(type) {
 				case string:
 					out := append([]byte(t), self.sep...)
 					return utils.MemCpy(buff, out), nil
@@ -72,7 +69,7 @@ func (self *Pipe) Read(buff []byte) (int, error) {
 						append(t, self.sep...)), nil
 
 				default:
-					data := fmt.Sprintf("%v", value)
+					data := fmt.Sprintf("%v", v)
 					out := append([]byte(data), self.sep...)
 					return utils.MemCpy(buff, out), nil
 				}
@@ -139,6 +136,13 @@ type PipeFilesystemAccessor struct {
 
 func (self PipeFilesystemAccessor) ParsePath(path string) (*accessors.OSPath, error) {
 	return accessors.NewLinuxOSPath(path)
+}
+
+func (self PipeFilesystemAccessor) Describe() *accessors.AccessorDescriptor {
+	return &accessors.AccessorDescriptor{
+		Name:        "pipe",
+		Description: `Read from a VQL pipe.`,
+	}
 }
 
 func (self PipeFilesystemAccessor) New(scope vfilter.Scope) (
@@ -209,7 +213,6 @@ func (self PipeFilesystemAccessor) OpenWithOSPath(
 }
 
 func init() {
-	accessors.Register("pipe", &PipeFilesystemAccessor{},
-		`Read from a VQL pipe.`)
+	accessors.Register(&PipeFilesystemAccessor{})
 	vql_subsystem.RegisterFunction(&PipeFunction{})
 }

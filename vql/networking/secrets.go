@@ -65,7 +65,7 @@ func (self *HTTPClientCache) mergeSecretToRequest(
 	}
 
 	// Currently secrets only support a single URL
-	s.GetString("method", &arg.Method)
+	s.UpdateString("method", &arg.Method)
 
 	// Normalize the method
 	arg.Method = strings.ToUpper(arg.Method)
@@ -73,19 +73,19 @@ func (self *HTTPClientCache) mergeSecretToRequest(
 		arg.Method = "GET"
 	}
 
-	s.GetString("user_agent", &arg.UserAgent)
-	s.GetString("root_ca", &arg.RootCerts)
-	s.GetBool("skip_verify", &arg.SkipVerify)
-	err = s.GetDict("extra_params", arg.Params)
+	s.UpdateString("user_agent", &arg.UserAgent)
+	s.UpdateString("root_ca", &arg.RootCerts)
+	s.UpdateBool("skip_verify", &arg.SkipVerify)
+	err = s.UpdateDict("extra_params", arg.Params)
 	if err != nil {
 		return nil, err
 	}
-	err = s.GetDict("extra_headers", arg.Headers)
+	err = s.UpdateDict("extra_headers", arg.Headers)
 	if err != nil {
 		return nil, err
 	}
 
-	err = s.GetDict("cookies", arg.CookieJar)
+	err = s.UpdateDict("cookies", arg.CookieJar)
 	if err != nil {
 		return nil, err
 	}
@@ -94,8 +94,7 @@ func (self *HTTPClientCache) mergeSecretToRequest(
 	arg.Url = []string{url_obj.String()}
 
 	// The real url is hidden so it does not get logged.
-	real_url_str := ""
-	s.GetString("url", &real_url_str)
+	real_url_str := s.GetString("url")
 
 	// The secret does not specify the url. This can happen if the
 	// secret has a url regex instead.
@@ -132,6 +131,47 @@ func (self *HTTPClientCache) mergeSecretToRequest(
 	return &arg, nil
 }
 
+func (self *_HttpPlugin) maybeForceSecrets(
+	ctx context.Context, scope vfilter.Scope,
+	arg *HttpPluginRequest) {
+
+	// Not running on the server, secrets dont work.
+	config_obj, ok := vql_subsystem.GetServerConfig(scope)
+	if !ok {
+		return
+	}
+
+	if config_obj.Security != nil &&
+		!config_obj.Security.VqlMustUseSecrets {
+		return
+	}
+
+	// If an explicit secret is defined let it filter the URLs.
+	if arg.Secret != "" {
+		return
+	}
+
+	// If we have to use secrets we must filter all the urls which are
+	// not secrets.
+	filtered_urls := make([]string, 0, len(arg.Url))
+	for _, url := range arg.Url {
+		url_obj, err := parseURL(url)
+		if err != nil {
+			scope.Log("http_client: parsing %s: %v", url, err)
+			continue
+		}
+
+		if url_obj.Scheme != "secret" {
+			scope.Log("http_client: must use secrets is enforced, dropping url %s", url)
+			continue
+		}
+
+		filtered_urls = append(filtered_urls, url)
+	}
+
+	arg.Url = filtered_urls
+}
+
 func (self *_HttpPlugin) filterURLsWithSecret(
 	ctx context.Context,
 	scope vfilter.Scope,
@@ -156,8 +196,7 @@ func (self *_HttpPlugin) filterURLsWithSecret(
 		return nil, err
 	}
 
-	url_regex := ""
-	s.GetString("url_regex", &url_regex)
+	url_regex := s.GetString("url_regex")
 	if url_regex != "" {
 		re, err := regexp.Compile(url_regex)
 		if err != nil {

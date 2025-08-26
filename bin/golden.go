@@ -35,6 +35,7 @@ import (
 	errors "github.com/go-errors/errors"
 	"github.com/mccutchen/go-httpbin/v2/httpbin"
 	"github.com/sergi/go-diff/diffmatchpatch"
+	proto "google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
 	"www.velocidex.com/golang/velociraptor/actions"
 	actions_proto "www.velocidex.com/golang/velociraptor/actions/proto"
@@ -100,8 +101,10 @@ type queryDesc struct {
 }
 
 type testFixture struct {
-	Parameters map[string]string
-	Queries    []queryDesc
+	Parameters    map[string]string
+	Queries       []queryDesc
+	ConfigPatches []string
+	ConfigMerges  []string
 }
 
 // We want to emulate as closely as possible the logic in the artifact
@@ -181,6 +184,15 @@ func makeCtxWithTimeout(
 func runTest(fixture *testFixture, sm *services.Service,
 	config_obj *config_proto.Config) (string, error) {
 
+	config_obj = proto.Clone(config_obj).(*config_proto.Config)
+
+	err := applyMergesAndPatches(config_obj,
+		nil, fixture.ConfigMerges,
+		nil, fixture.ConfigPatches)
+	if err != nil {
+		return "", err
+	}
+
 	gen := utils.IncrementalIdGenerator(0)
 	defer utils.SetIdGenerator(&gen)()
 
@@ -202,7 +214,7 @@ func runTest(fixture *testFixture, sm *services.Service,
 	storage.SetCurrentServerPem([]byte(config_obj.Frontend.Certificate))
 
 	writeback_service := writeback.GetWritebackService()
-	err := writeback_service.LoadWriteback(config_obj)
+	err = writeback_service.LoadWriteback(config_obj)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -392,7 +404,7 @@ func doGolden() error {
 
 		result, err := runTest(&fixture, sm, config_obj)
 		if err != nil {
-			return fmt.Errorf("Running test %v: %w", fixture, err)
+			return fmt.Errorf("Running test %v: %w", file_path, err)
 		}
 
 		outfile := strings.Replace(file_path, ".in.", ".out.", -1)
@@ -614,8 +626,10 @@ func (self MockTimeFunciton) Info(
 
 func parseFixture(data []byte) (res testFixture, err error) {
 	type tmpType struct {
-		Parameters map[string]string `yaml:"Parameters"`
-		Queries    []yaml.Node       `yaml:"Queries"`
+		ConfigMerges  []string          `yaml:"ConfigMerges"`
+		ConfigPatches []string          `yaml:"ConfigPatches"`
+		Parameters    map[string]string `yaml:"Parameters"`
+		Queries       []yaml.Node       `yaml:"Queries"`
 	}
 
 	var n tmpType
@@ -624,6 +638,8 @@ func parseFixture(data []byte) (res testFixture, err error) {
 		return res, err
 	}
 
+	res.ConfigMerges = n.ConfigMerges
+	res.ConfigPatches = n.ConfigPatches
 	res.Parameters = n.Parameters
 	for _, node := range n.Queries {
 		if node.Kind != yaml.ScalarNode {
@@ -650,8 +666,10 @@ func (self HTTPBinFunction) Call(ctx context.Context,
 	app := httpbin.New()
 	testServer := vtesting.NewServer(app, 8006)
 
-	vql_subsystem.GetRootScope(scope).AddDestructor(testServer.Close)
-
+	err := vql_subsystem.GetRootScope(scope).AddDestructor(testServer.Close)
+	if err != nil {
+		scope.Log("httpbin: %v", err)
+	}
 	return testServer.URL
 }
 

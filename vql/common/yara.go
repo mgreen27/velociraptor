@@ -104,12 +104,6 @@ func (self YaraScanPlugin) Call(
 			arg.Blocksize = 1024 * 1024
 		}
 
-		err = vql_subsystem.CheckFilesystemAccess(scope, arg.Accessor)
-		if err != nil {
-			scope.Log("yara: %s", err.Error())
-			return
-		}
-
 		rules, err := getYaraRules(arg.Key, arg.Namespace, arg.Rules,
 			arg.YaraVariables, scope)
 		if err != nil {
@@ -239,11 +233,10 @@ func compileRules(scope vfilter.Scope,
 	}
 
 	if vars != nil {
-		for _, k := range vars.Keys() {
-			v, _ := vars.Get(k)
-			err := compiler.DefineVariable(k, v)
+		for _, i := range vars.Items() {
+			err := compiler.DefineVariable(i.Key, i.Value)
 			if err != nil {
-				vql_subsystem.CacheSet(scope, key, err)
+				vql_subsystem.CacheSet(scope, i.Key, err)
 				return nil, err
 			}
 		}

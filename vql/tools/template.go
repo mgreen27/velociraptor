@@ -42,6 +42,12 @@ func (self *TemplateFunction) Call(ctx context.Context,
 			"Scope": template_engine.GetScope,
 			"Get":   template_engine.GetFunction,
 			"str":   utils.ToString,
+			"env": func() string {
+				return ""
+			},
+			"expandenv": func() string {
+				return ""
+			},
 		})
 
 	template, err := tmpl.Parse(reporting.SanitizeGoTemplates(arg.Template))
@@ -51,7 +57,7 @@ func (self *TemplateFunction) Call(ctx context.Context,
 	}
 
 	buffer := &bytes.Buffer{}
-	err = template.Execute(buffer, arg.Expansion.ToDict())
+	err = template.Execute(buffer, arg.Expansion.ToMap())
 	if err != nil {
 		scope.Log("template: %v", err)
 		return vfilter.Null{}

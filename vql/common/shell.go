@@ -19,28 +19,36 @@ package common
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
 
 	"github.com/Velocidex/ordereddict"
+	"github.com/google/shlex"
 	"www.velocidex.com/golang/velociraptor/acls"
 	"www.velocidex.com/golang/velociraptor/artifacts"
+	"www.velocidex.com/golang/velociraptor/constants"
+	"www.velocidex.com/golang/velociraptor/services"
+	"www.velocidex.com/golang/velociraptor/utils"
 	"www.velocidex.com/golang/velociraptor/vql"
 	vql_subsystem "www.velocidex.com/golang/velociraptor/vql"
+	"www.velocidex.com/golang/velociraptor/vql/functions"
 	vfilter "www.velocidex.com/golang/vfilter"
 	"www.velocidex.com/golang/vfilter/arg_parser"
 )
 
 type ShellPluginArgs struct {
-	Argv   []string         `vfilter:"required,field=argv,doc=Argv to run the command with."`
-	Sep    string           `vfilter:"optional,field=sep,doc=The separator that will be used to split the stdout into rows."`
-	Length int64            `vfilter:"optional,field=length,doc=Size of buffer to capture output per row."`
-	Env    vfilter.LazyExpr `vfilter:"optional,field=env,doc=Environment variables to launch with."`
-	Cwd    string           `vfilter:"optional,field=cwd,doc=If specified we change to this working directory first."`
+	Argv   []string          `vfilter:"required,field=argv,doc=Argv to run the command with."`
+	Sep    string            `vfilter:"optional,field=sep,doc=The separator that will be used to split the stdout into rows."`
+	Length int64             `vfilter:"optional,field=length,doc=Size of buffer to capture output per row."`
+	Env    *ordereddict.Dict `vfilter:"optional,field=env,doc=Environment variables to launch with."`
+	Cwd    string            `vfilter:"optional,field=cwd,doc=If specified we change to this working directory first."`
+	Secret string            `vfilter:"optional,field=secret,doc=The name of a secret to use."`
 }
 
 type ShellResult struct {
@@ -52,6 +60,32 @@ type ShellResult struct {
 
 type ShellPlugin struct {
 	pipeReader pipeReaderFunc
+}
+
+func (self *ShellPlugin) maybeForceSecrets(
+	ctx context.Context, scope vfilter.Scope,
+	arg *ShellPluginArgs) error {
+
+	// Not running on the server, secrets dont work.
+	config_obj, ok := vql_subsystem.GetServerConfig(scope)
+	if !ok {
+		return nil
+	}
+
+	if config_obj.Security == nil {
+		return nil
+	}
+
+	if !config_obj.Security.VqlMustUseSecrets {
+		return nil
+	}
+
+	// If an explicit secret is defined let it filter the URLs.
+	if arg.Secret != "" {
+		return nil
+	}
+
+	return utils.SecretsEnforced
 }
 
 func (self ShellPlugin) Call(
@@ -84,13 +118,33 @@ func (self ShellPlugin) Call(
 			return
 		}
 
-		var env *ordereddict.Dict
-		if arg.Env != nil {
-			env = vfilter.RowToDict(ctx, scope, arg.Env.Reduce(ctx))
+		err = self.maybeForceSecrets(ctx, scope, arg)
+		if err != nil {
+			scope.Error("execve: %v", err)
+			return
+		}
+
+		original_args := append([]string{}, arg.Argv...)
+		if arg.Secret != "" {
+			arg, err = self.mergeSecretToRequest(ctx, scope, arg, arg.Secret)
+			if err != nil {
+				scope.Log("ERROR:execve: %v", err)
+				return
+			}
 		}
 
 		if len(arg.Argv) == 0 {
 			scope.Log("execve: no command to run")
+			return
+		}
+
+		// This often happens when people accidentally use VQL
+		// expressions to calculate the program name which results in
+		// NULL. To avoid a security issue where and attacker can add
+		// a binary called "null", we just refuse to run binaries with
+		// that name.
+		if strings.ToLower(arg.Argv[0]) == "null" {
+			scope.Error("execve: Attempt to run NULL, rejected")
 			return
 		}
 
@@ -106,20 +160,17 @@ func (self ShellPlugin) Call(
 
 		// Report the command we ran for auditing
 		// purposes. This will be collected in the flow logs.
-		scope.Log("execve: Running external command %v", arg.Argv)
+		scope.Log("execve: Running external command %v", original_args)
 
 		if arg.Length == 0 {
 			arg.Length = 10240
 		}
 
 		command := exec.CommandContext(sub_ctx, arg.Argv[0], arg.Argv[1:]...)
-		if env != nil {
-			for _, k := range env.Keys() {
-				v, pres := env.GetString(k)
-				if pres {
-					command.Env = append(command.Env,
-						fmt.Sprintf("%s=%s", k, v))
-				}
+		if arg.Env != nil {
+			for _, i := range arg.Env.Items() {
+				command.Env = append(command.Env,
+					fmt.Sprintf("%s=%s", i.Key, i.Value))
 			}
 		}
 		command.Dir = arg.Cwd
@@ -273,6 +324,69 @@ func (self ShellPlugin) Call(
 	return output_chan
 }
 
+func (self ShellPlugin) mergeSecretToRequest(
+	ctx context.Context, scope vfilter.Scope,
+	arg *ShellPluginArgs, secret_name string) (*ShellPluginArgs, error) {
+
+	config_obj, ok := vql_subsystem.GetServerConfig(scope)
+	if !ok {
+		return nil, errors.New("Secrets may only be used on the server")
+	}
+
+	secrets_service, err := services.GetSecretsService(config_obj)
+	if err != nil {
+		return nil, err
+	}
+
+	principal := vql_subsystem.GetPrincipal(scope)
+	secret_record, err := secrets_service.GetSecret(ctx, principal,
+		constants.EXECVE_SECRET, secret_name)
+	if err != nil {
+		return nil, err
+	}
+
+	// Wipe the args to prevent users from selecting anything here.
+	new_arg := &ShellPluginArgs{
+		Env: ordereddict.NewDict(),
+	}
+
+	new_arg.Env, err = secret_record.GetDict("env")
+	if err != nil {
+		return nil, fmt.Errorf("Secret %v: While parsing env %w",
+			arg.Secret, err)
+	}
+
+	// Optional secret variable - it is ok to let the user override.
+	secret_record.UpdateString("cwd", &new_arg.Cwd)
+
+	commandline := secret_record.GetString("prefix_commandline")
+	if commandline == "" {
+		return nil, fmt.Errorf(
+			"Secret %v does not specify a prefix_commandline", arg.Secret)
+	}
+
+	// Parse the command line into argv
+	secret_argv, err := CommandlineToArgv(commandline)
+	if err != nil {
+		return nil, err
+	}
+
+	// Two possibilities:
+	// 1. The requested argv matches the secret prefix: This is fine!
+	// 2. The requested argv gets added to the secret prefix.
+	if len(arg.Argv) >= len(secret_argv) &&
+		utils.StringSliceEq(secret_argv, arg.Argv[:len(secret_argv)]) {
+		// Prefix matches exactly - no issues - let it run!
+		new_arg.Argv = arg.Argv
+		return new_arg, nil
+	}
+
+	// Add the requested argv to the prefix.
+	new_arg.Argv = append(secret_argv, arg.Argv...)
+
+	return new_arg, nil
+}
+
 func (self ShellPlugin) Info(scope vfilter.Scope, type_map *vfilter.TypeMap) *vfilter.PluginInfo {
 	return &vfilter.PluginInfo{
 		Name:     "execve",
@@ -391,4 +505,12 @@ func init() {
 	vql_subsystem.RegisterPlugin(&ShellPlugin{
 		pipeReader: defaultPipeReader,
 	})
+}
+
+func CommandlineToArgv(in string) ([]string, error) {
+	if runtime.GOOS == "windows" {
+		return functions.CommandLineToArgv(in), nil
+	}
+
+	return shlex.Split(in)
 }

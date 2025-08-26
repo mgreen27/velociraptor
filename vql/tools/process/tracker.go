@@ -178,18 +178,16 @@ func (self *ProcessTracker) Enrich(
 		return nil, false
 	}
 
-	for _, k := range self.enrichments.Keys() {
-		enrichment_any, _ := self.enrichments.Get(k)
-		enrichment, ok := enrichment_any.(*vfilter.Lambda)
+	for _, v := range self.enrichments.Values() {
+		enrichment, ok := v.(*vfilter.Lambda)
 		if !ok {
 			continue
 		}
 		update := enrichment.Reduce(ctx, scope, []vfilter.Any{pe})
 		update_dict, ok := update.(*ordereddict.Dict)
 		if ok {
-			for _, k := range update_dict.Keys() {
-				v, _ := update_dict.Get(k)
-				pe.Data.Update(k, v)
+			for _, i := range update_dict.Items() {
+				pe.Data.Update(i.Key, i.Value)
 			}
 		}
 	}
@@ -402,13 +400,12 @@ func NewProcessTracker(scope vfilter.Scope, max_size int) *ProcessTracker {
 }
 
 type ProcessEntry struct {
-	Id           string            `vfilter:"required,field=id,doc=Process ID."`
-	ParentId     string            `vfilter:"optional,field=parent_id,doc=The parent's process ID."`
-	RealParentId string            `vfilter:"optional,field=real_parent_id,doc=The parent's real process ID."`
-	UpdateType   string            `vfilter:"optional,field=update_type,doc=What this row represents."`
-	StartTime    time.Time         `vfilter:"optional,field=start_time,doc=Timestamp for start,end updates"`
-	EndTime      time.Time         `vfilter:"optional,field=end_time,doc=Timestamp for start,end updates"`
-	Data         *ordereddict.Dict `vfilter:"optional,field=data,doc=Arbitrary key/value to associate with the process"`
+	Id         string            `vfilter:"required,field=id,doc=Process ID."`
+	ParentId   string            `vfilter:"optional,field=parent_id,doc=The parent's process ID."`
+	UpdateType string            `vfilter:"optional,field=update_type,doc=What this row represents."`
+	StartTime  time.Time         `vfilter:"optional,field=start_time,doc=Timestamp for start,end updates"`
+	EndTime    time.Time         `vfilter:"optional,field=end_time,doc=Timestamp for start,end updates"`
+	Data       *ordereddict.Dict `vfilter:"optional,field=data,doc=Arbitrary key/value to associate with the process"`
 }
 
 type _InstallProcessTrackerArgs struct {
